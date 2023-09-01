@@ -6,14 +6,20 @@ import {VotingFee} from "./VotingFee.sol";
 import {VotingHistory} from "./VotingHistory.sol";
 import {LinkedList} from "./LinkedList.sol";
 
-contract Voting is MyERC20, VotingFee, VotingHistory, LinkedList {
+contract Voting is MyERC20, VotingFee, LinkedList {
     error TimeToVoteError(uint256 received, uint256 minTime);
+    error TimeToVoteIsNotExpiredError(uint256 timeToVote, uint256 timeLeft);
+
     error VotingNotStartedError();
     error VotingIsRunningError();
-    error VotingForSamePriceError(uint256 price);
-    error TimeToVoteIsNotExpiredError(uint256 timeToVote, uint256 timeLeft);
-    error BalanceIsNotEnoughError(uint256 yourBalance, uint256 minBalance);
-    error PriceIsNotValidError(uint256 price);
+    error VotingForTheSamePriceError(uint256 price);
+    error VotingForNotValidPriceError(uint256 price);
+
+    error TwoNodesWithSamePriceError(uint256 price);
+
+    error EtherError(uint256 received, uint256 required);
+    error SellingMoreThanYouHaveError(uint256 amount);
+    error CantReturnEtherError();
 
     uint256 public tokenPrice;
     uint256 private _minTokenAmount;
@@ -23,37 +29,24 @@ contract Voting is MyERC20, VotingFee, VotingHistory, LinkedList {
     uint256 private _votingStartedTime;
     uint256 private _timeToVote;
 
-    // votingId => LinkedList
-    event VotingStarted(uint256 votingNumber, uint256 timeStarted);
-    event VotingEnded(uint256 votingNumber, uint256 timeEnded);
-    event NewTokenPrice(uint256 newTokenPrice);
+    // NOTE: Do I really need to index both timeStarted and timeEnded?
+    event VotingStarted(uint256 indexed votingNumber, uint256 indexed timeStarted);
+    event VotingEnded(uint256 indexed votingNumber, uint256 indexed timeEnded);
+    event NewTokenPrice(uint256 indexed newTokenPrice);
 
     constructor(
         uint256 _tokenPrice,
         uint256 timeToVote,
         uint256 buyFeePercentage,
-        uint256 sellFeePercentage
-    ) VotingFee(buyFeePercentage, sellFeePercentage) {
+        uint256 sellFeePercentage,
+        uint256 decimals
+    ) VotingFee(buyFeePercentage, sellFeePercentage, decimals) {
         if (timeToVote < 1 days || timeToVote > 1 weeks) {
             revert TimeToVoteError({received: timeToVote, minTime: 1 days});
         }
 
         tokenPrice = _tokenPrice;
         _timeToVote = timeToVote;
-    }
-
-    function setNewTokenPrice(uint256 newTokenPrice) external {
-        if (newTokenPrice == tokenPrice) {
-            return;
-        }
-
-        if (_isVotingStarted) {
-            revert VotingIsRunningError();
-        }
-
-        tokenPrice = newTokenPrice;
-
-        emit NewTokenPrice(newTokenPrice);
     }
 
     function startVoting() external {
@@ -77,18 +70,24 @@ contract Voting is MyERC20, VotingFee, VotingHistory, LinkedList {
             revert VotingNotStartedError();
         }
 
-        uint256 passedTime = block.timestamp - _votingStartedTime;
+        uint256 timestamp = block.timestamp;
+        uint256 passedTime = timestamp - _votingStartedTime;
 
         if (passedTime < _timeToVote) {
             revert TimeToVoteIsNotExpiredError({timeToVote: _timeToVote, timeLeft: _timeToVote - passedTime});
         }
 
         _isVotingStarted = false;
-        tokenPrice = head;
+
+        uint256 nextNodePrice = getNodeByPrice(head).next;
+
+        if (head != nextNodePrice) {
+            tokenPrice = head;
+        }
 
         VotingPeriod memory votingPeriod = VotingPeriod({
             startTime: _votingStartedTime,
-            endTime: block.timestamp,
+            endTime: timestamp,
             topPrice: tokenPrice,
             votingId: _votingNumber
         });
@@ -104,7 +103,7 @@ contract Voting is MyERC20, VotingFee, VotingHistory, LinkedList {
         }
 
         if (price <= 0) {
-            revert PriceIsNotValidError(price);
+            revert VotingForNotValidPriceError(price);
         }
 
         address voter = msg.sender;
@@ -115,13 +114,13 @@ contract Voting is MyERC20, VotingFee, VotingHistory, LinkedList {
             revert BalanceIsNotEnoughError({yourBalance: voterBalance, minBalance: 1});
         }
 
-        bool isPriceExist = getPowerByPrice(_votingNumber, price) != 0;
-        bool isPriceTheSame = getPriceByVoter(_votingNumber, voter) == price;
-        bool isVoterVoted = getPriceByVoter(_votingNumber, voter) != 0;
+        bool isPriceExist = getPowerByPrice(price) != 0;
+        bool isPriceTheSame = getPriceByVoter(voter) == price;
+        bool isVoterVoted = getPriceByVoter(voter) != 0;
         bool isVoterBalanceEnough = voterBalance >= _minTokenAmount;
 
         if (isPriceTheSame) {
-            revert VotingForSamePriceError(price);
+            revert VotingForTheSamePriceError(price);
         }
 
         if (!isPriceExist && !isVoterBalanceEnough) {
@@ -129,101 +128,93 @@ contract Voting is MyERC20, VotingFee, VotingHistory, LinkedList {
         }
 
         if (isVoterVoted) {
-            uint256 prevVoterPrice = getPriceByVoter(_votingNumber, voter);
+            uint256 prevVoterPrice = getPriceByVoter(voter);
 
-            decreaseNodeValueBy(_votingNumber, prevVoterPrice, voterBalance);
+            _decreaseNodeValueBy(prevVoterPrice, voterBalance);
+
+            uint256 prevVoterPricePower = getPowerByPrice(prevVoterPrice);
+
+            if (prevVoterPricePower == 0) {
+                remove(prevVoterPrice);
+            }
         }
 
         if (!isPriceExist) {
-            push(_votingNumber, price, voterBalance, tail);
+            push(price, voterBalance, tail);
         } else {
-            increaseNodeValueBy(_votingNumber, price, voterBalance);
+            _increaseNodeValueBy(price, voterBalance);
         }
 
-        _linkVoterToPrice(voter, price);
+        _setVoterToPrice(voter, price);
 
-        emit NodeAction(price);
+        uint256 newPricePower = getPowerByPrice(price);
+
+        emit NodeAction(price, newPricePower);
     }
 
     function buy(uint256 amount) external payable {
         uint256 requiredEtherAmount = tokenPrice * amount;
-        uint256 fee = (requiredEtherAmount * _buyFeePercentage) / 10000;
+        uint256 fee = _getPercentage(requiredEtherAmount, _buyFeePercentage);
         uint256 totalEtherAmount = requiredEtherAmount + fee;
         uint256 receivedEtherAmount = msg.value;
         address sender = msg.sender;
 
-        require(receivedEtherAmount >= totalEtherAmount, "Voting: received ether amount is less than required");
-
-        _mint(sender, amount);
-        _increasePricePower(sender, amount);
-
-        if (receivedEtherAmount > totalEtherAmount) {
-            payable(sender).transfer(receivedEtherAmount - totalEtherAmount);
+        if (receivedEtherAmount < totalEtherAmount) {
+            revert EtherError({received: receivedEtherAmount, required: totalEtherAmount});
         }
 
-        _minTokenAmount = (_minTokenAmountPercentage * totalSupply()) / 10000;
+        _mint(sender, amount);
+        _increaseVoterPricePowerBy(sender, amount);
+
+        if (receivedEtherAmount > totalEtherAmount) {
+            uint256 change = receivedEtherAmount - totalEtherAmount;
+
+            payable(sender).transfer(change);
+        }
+
+        _minTokenAmount = _getPercentage(totalSupply(), _minTokenAmountPercentage);
         _totalFees += fee;
     }
 
     function sell(uint256 amount) external {
         address sender = msg.sender;
 
-        require(_balances[sender] >= amount, "Voting: you don't have enough tokens");
+        if (_balances[sender] < amount) {
+            revert SellingMoreThanYouHaveError(amount);
+        }
 
         uint256 etherAmount = tokenPrice * amount;
-        uint256 fee = (etherAmount * _sellFeePercentage) / 10000;
+        uint256 fee = _getPercentage(etherAmount, _sellFeePercentage);
         uint256 etherToReturn = etherAmount - fee;
 
-        require(address(this).balance >= etherToReturn, "Voting: not enough ETH to send");
+        if (address(this).balance < etherToReturn) {
+            revert CantReturnEtherError();
+        }
 
         _burn(sender, amount);
-        _decreasePricePower(sender, amount);
+        _decreaseVoterPricePowerBy(sender, amount);
 
-        _minTokenAmount = (_minTokenAmountPercentage * totalSupply()) / 10000;
+        _minTokenAmount = _getPercentage(totalSupply(), _minTokenAmountPercentage);
         _totalFees += fee;
 
         payable(sender).transfer(etherToReturn);
     }
 
     function transfer(address to, uint256 amount) public override returns (bool) {
-        bool result = super.transfer(to, amount);
+        super.transfer(to, amount);
 
-        if (result) {
-            _decreasePricePower(msg.sender, amount);
-            _increasePricePower(to, amount);
-        }
+        _decreaseVoterPricePowerBy(msg.sender, amount);
+        _increaseVoterPricePowerBy(to, amount);
 
-        return result;
+        return true;
     }
 
     function transferFrom(address owner, address to, uint256 amount) public override returns (bool) {
-        bool result = super.transferFrom(owner, to, amount);
+        super.transferFrom(owner, to, amount);
 
-        if (result) {
-            _decreasePricePower(owner, amount);
-            _increasePricePower(to, amount);
-        }
+        _decreaseVoterPricePowerBy(owner, amount);
+        _increaseVoterPricePowerBy(to, amount);
 
-        return result;
-    }
-
-    function _decreasePricePower(address owner, uint256 amount) internal {
-        uint256 votedPrice = getPriceByVoter(_votingNumber, owner);
-
-        if (votedPrice > 0) {
-            decreaseNodeValueBy(_votingNumber, votedPrice, amount);
-        }
-    }
-
-    function _increasePricePower(address owner, uint256 amount) internal {
-        uint256 votedPrice = getPriceByVoter(_votingNumber, owner);
-
-        if (votedPrice > 0) {
-            increaseNodeValueBy(_votingNumber, votedPrice, amount);
-        }
-    }
-
-    function _linkVoterToPrice(address voter, uint256 price) internal {
-        _setVoterToPrice(_votingNumber, voter, price);
+        return true;
     }
 }

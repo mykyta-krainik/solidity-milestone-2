@@ -2,27 +2,23 @@
 pragma solidity ^0.8.9;
 
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {Percents} from "./Percents.sol";
 
-contract VotingFee is Ownable {
-    error BuyFeePercentageError(uint256 received, uint256 max, uint256 min);
-
-    error SellFeePercentageError(uint256 received, uint256 max, uint256 min);
+contract VotingFee is Ownable, Percents {
+    error FeeWithdrawPeriodError(uint256 currentTime, uint256 timeLeft);
 
     uint256 internal _lastFeeWithdrawTime;
     uint256 internal _feeWithdrawPeriod = 1 weeks;
     uint256 internal _totalFees;
+
     uint256 internal _buyFeePercentage;
     uint256 internal _sellFeePercentage;
 
-    constructor(uint256 buyFeePercentage, uint256 sellFeePercentage) {
-        if (buyFeePercentage > 10000 || buyFeePercentage < 0) {
-            revert BuyFeePercentageError({received: buyFeePercentage, max: 10000, min: 0});
-        }
-
-        if (sellFeePercentage > 10000 || sellFeePercentage < 0) {
-            revert SellFeePercentageError({received: sellFeePercentage, max: 10000, min: 0});
-        }
-
+    constructor(
+        uint256 buyFeePercentage,
+        uint256 sellFeePercentage,
+        uint256 decimals
+    ) Percents(decimals) notValidPercentage(buyFeePercentage) notValidPercentage(sellFeePercentage) {
         _buyFeePercentage = buyFeePercentage;
         _sellFeePercentage = sellFeePercentage;
         _lastFeeWithdrawTime = block.timestamp;
@@ -33,26 +29,24 @@ contract VotingFee is Ownable {
     }
 
     function withdrawFees() external onlyOwner {
-        require(
-            block.timestamp - _lastFeeWithdrawTime >= _feeWithdrawPeriod,
-            "Voting: fee withdraw period is not over yet"
-        );
+        uint256 currentTimestamp = block.timestamp;
+        uint256 timeLeft = currentTimestamp - _lastFeeWithdrawTime - _feeWithdrawPeriod;
 
-        _lastFeeWithdrawTime = block.timestamp;
+        if (timeLeft > 0) {
+            revert FeeWithdrawPeriodError({currentTime: currentTimestamp, timeLeft: timeLeft});
+        }
+
+        _lastFeeWithdrawTime = currentTimestamp;
 
         payable(address(0)).transfer(_totalFees);
         _totalFees = 0;
     }
 
     function setBuyFeePercentage(uint256 percentage) external onlyOwner {
-        require(percentage < 10000, "Voting: percentage must be < 10000");
-
         _buyFeePercentage = percentage;
     }
 
     function setSellFeePercentage(uint256 percentage) external onlyOwner {
-        require(percentage < 10000, "Voting: percentage must be < 10000");
-
         _sellFeePercentage = percentage;
     }
 

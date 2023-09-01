@@ -4,17 +4,35 @@ pragma solidity ^0.8.9;
 import {IERC20} from "@openzeppelin/contracts/interfaces/IERC20.sol";
 
 contract MyERC20 is IERC20 {
+    error TransferToZeroAddressError();
+    error TransferFromZeroAddressError();
+    error TransferToYourselfError();
+
+    error BalanceIsNotEnoughError(uint256 yourBalance, uint256 minBalance);
+    error AllowanceIsNotEnoughError(uint256 yourAllowance, uint256 yourRequestedAmount);
+
     mapping(address => uint256) internal _balances;
     mapping(address => mapping(address => uint256)) private _allowances;
     uint256 private _totalSupply;
 
-    modifier notZeroAddress(address addr, string memory message) {
-        require(addr != address(0), message);
+    modifier notToZeroAddress(address addr) {
+        if (addr == address(0)) {
+            revert TransferToZeroAddressError();
+        }
+        _;
+    }
+
+    modifier notFromZeroAddress(address addr) {
+        if (addr == address(0)) {
+            revert TransferFromZeroAddressError();
+        }
         _;
     }
 
     modifier notToYourself(address from, address to) {
-        require(from != to, "MyERC20: transfer to yourself");
+        if (from == to) {
+            revert TransferToYourselfError();
+        }
         _;
     }
 
@@ -36,8 +54,13 @@ contract MyERC20 is IERC20 {
         return _allowances[owner][spender];
     }
 
-    function approve(address spender, uint256 amount) external override returns (bool) {
-        require(_balances[msg.sender] >= amount, "MyERC20: approve amount exceeds balance");
+    function approve(
+        address spender,
+        uint256 amount
+    ) external override notToYourself(msg.sender, spender) returns (bool) {
+        if (_balances[msg.sender] < amount) {
+            revert BalanceIsNotEnoughError(_balances[msg.sender], amount);
+        }
 
         _approve(msg.sender, spender, amount);
 
@@ -57,14 +80,10 @@ contract MyERC20 is IERC20 {
         address from,
         address to,
         uint256 amount
-    )
-        internal
-        virtual
-        notZeroAddress(from, "MyERC20: transfer from the zero address")
-        notZeroAddress(to, "MyERC20: transfer to the zero address")
-        notToYourself(from, to)
-    {
-        require(_balances[from] >= amount, "MyERC20: transfer amount exceeds balance");
+    ) internal virtual notFromZeroAddress(from) notToZeroAddress(to) {
+        if (_balances[from] < amount) {
+            revert BalanceIsNotEnoughError(_balances[from], amount);
+        }
 
         _balances[from] -= amount;
         _balances[to] += amount;
@@ -76,13 +95,7 @@ contract MyERC20 is IERC20 {
         address owner,
         address spender,
         uint256 amount
-    )
-        internal
-        virtual
-        notZeroAddress(owner, "MyERC20: owner is the zero address")
-        notZeroAddress(spender, "MyERC20: spender is the zero address")
-        notToYourself(owner, spender)
-    {
+    ) internal virtual notFromZeroAddress(owner) notToZeroAddress(spender) notToYourself(owner, spender) {
         _allowances[owner][spender] = amount;
 
         emit Approval(owner, spender, amount);
@@ -92,32 +105,25 @@ contract MyERC20 is IERC20 {
         address owner,
         address spender,
         uint256 amount
-    )
-        internal
-        virtual
-        notZeroAddress(owner, "MyERC20: owner is the zero address")
-        notZeroAddress(spender, "MyERC20: spender is the zero address")
-    {
-        require(_allowances[owner][spender] >= amount, "MyERC20: transfer amount exceeds allowance");
+    ) internal virtual notFromZeroAddress(owner) notToZeroAddress(spender) {
+        if (_allowances[owner][spender] < amount) {
+            revert AllowanceIsNotEnoughError(_allowances[owner][spender], amount);
+        }
 
         _approve(owner, spender, _allowances[owner][spender] - amount);
     }
 
-    function _mint(
-        address account,
-        uint256 amount
-    ) internal virtual notZeroAddress(account, "MyERC20: mint from the zero address") {
+    function _mint(address account, uint256 amount) internal virtual notToZeroAddress(account) {
         _totalSupply += amount;
         _balances[account] += amount;
 
         emit Transfer(address(0), account, amount);
     }
 
-    function _burn(
-        address account,
-        uint256 amount
-    ) internal virtual notZeroAddress(account, "MyERC20: burn from the zero address") {
-        require(_balances[account] >= amount, "MyERC20: burn amount exceeds balance");
+    function _burn(address account, uint256 amount) internal virtual notFromZeroAddress(account) {
+        if (_balances[account] < amount) {
+            revert BalanceIsNotEnoughError(_balances[account], amount);
+        }
 
         _totalSupply -= amount;
         _balances[account] -= amount;
