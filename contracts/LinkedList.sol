@@ -136,14 +136,24 @@ contract LinkedList is VotingHistory {
 
     function _decreaseVoterPricePowerBy(address owner, uint256 amount) internal {
         uint256 votedPrice = getPriceByVoter(owner);
+        uint256 votedPricePower = getPowerByPrice(votedPrice);
 
-        _decreaseNodeValueBy(votedPrice, amount);
+        if (votedPricePower != 0) {
+            _decreaseNodeValueBy(votedPrice, amount);
+
+            emit NodeAction(votedPrice, getPowerByPrice(votedPrice));
+        }
     }
 
     function _increaseVoterPricePowerBy(address owner, uint256 amount) internal {
         uint256 votedPrice = getPriceByVoter(owner);
+        uint256 votedPricePower = getPowerByPrice(votedPrice);
 
-        _increaseNodeValueBy(votedPrice, amount);
+        if (votedPricePower != 0) {
+            _increaseNodeValueBy(votedPrice, amount);
+
+            emit NodeAction(votedPrice, getPowerByPrice(votedPrice));
+        }
     }
 
     function clearVoterPrice(address owner) public {

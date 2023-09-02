@@ -29,6 +29,7 @@ contract Voting is MyERC20, VotingFee, LinkedList {
     uint256 private _votingStartedTime;
     uint256 private _timeToVote;
 
+    // TODO:
     // NOTE: Do I really need to index both timeStarted and timeEnded?
     event VotingStarted(uint256 indexed votingNumber, uint256 indexed timeStarted);
     event VotingEnded(uint256 indexed votingNumber, uint256 indexed timeEnded);
