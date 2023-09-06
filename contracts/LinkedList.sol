@@ -1,16 +1,14 @@
 // SPDX-License-Identifier: SEE LICENSE IN LICENSE
 pragma solidity ^0.8.9;
 
-import {VotingHistory} from "./VotingHistory.sol";
-
-contract LinkedList is VotingHistory {
+contract LinkedList {
     error PushingNonValidPrice();
-    error PushingExistingNode(uint256 price);
     error UpdatingNonExistingNode(uint256 price);
     error RemovingNonExistingNode(uint256 price);
-    error DecreasingNodeValueByTooMuch(uint256 price, uint256 power);
 
-    event NodeAction(uint256 indexed price, uint256 power);
+    error VotingForTheSamePriceError(uint256 price);
+
+    error NodeIndexIsNotValidError(uint256 index);
 
     struct Node {
         // index (price) pointer to the previous node
@@ -20,38 +18,105 @@ contract LinkedList is VotingHistory {
         uint256 power;
         uint256 price;
     }
+    // TODO: rewrite to use array
+    // price => node
+    mapping(uint256 => Node) private _nodes;
+    // voter => price
+    mapping(address => uint256) private _voterToPrice;
+    // price => isVoted
+    mapping(uint256 => bool) private _priceToIsVoted;
 
-    // _votingNumber => price => node
-    mapping(uint256 => mapping(uint256 => Node)) private _nodes;
-    mapping(uint256 => mapping(address => uint256)) private _voterToPrice;
-
-    // top price
+    // price with the highest power
     uint256 public head = 0;
+    // price with the lowest power
     uint256 public tail = 0;
 
+    uint256 internal _votingNumber = 0;
+
+    modifier isIndexValid(uint256 index) {
+        if (index < 0) {
+            revert NodeIndexIsNotValidError(index);
+        }
+
+        bool isPriceExist = isPriceExists(index);
+
+        if (index != 0 && !isPriceExist) {
+            revert NodeIndexIsNotValidError(index);
+        }
+
+        _;
+    }
+
     function getNodeByPrice(uint256 price) public view returns (Node memory) {
-        return _nodes[_votingNumber][price];
+        return _nodes[price];
     }
 
     function getPowerByPrice(uint256 price) public view returns (uint256) {
-        return _nodes[_votingNumber][price].power;
+        return _nodes[price].power;
     }
 
     function getTopPrice() external view returns (uint256) {
         return head;
     }
 
-    function getPriceByVoter(address owner) public view returns (uint256) {
-        return _voterToPrice[_votingNumber][owner];
+    function getPrevNode(uint256 price) public view returns (Node memory) {
+        uint256 prevNodePrice = _nodes[price].prev;
+
+        return getNodeByPrice(prevNodePrice);
     }
 
-    function push(uint256 price, uint256 power, uint256 prev) public {
+    function getNextNode(uint256 price) public view returns (Node memory) {
+        uint256 nextNodePrice = _nodes[price].next;
+
+        return getNodeByPrice(nextNodePrice);
+    }
+
+    function _isNodeInValidPosition(uint256 power, uint256 prev) internal view returns (bool) {
+        uint256 prevNodePower = getPowerByPrice(prev);
+        uint256 nextNodePower = getNextNode(prev).power;
+
+        if (prev == 0 && power >= nextNodePower) {
+            return true;
+        }
+
+        if (prevNodePower >= power && power >= nextNodePower) {
+            return true;
+        }
+
+        return false;
+    }
+
+    function getPriceByVoter(address owner) public view returns (uint256) {
+        return _voterToPrice[owner];
+    }
+
+    function isVoterVoted() external view returns (bool) {
+        return getPriceByVoter(msg.sender) != 0;
+    }
+
+    function isPriceExists(uint256 price) public view returns (bool) {
+        return _priceToIsVoted[price];
+    }
+
+    function _setPriceToVoted(uint256 price) internal {
+        _priceToIsVoted[price] = true;
+    }
+
+    function _setVoterToPrice(address voter, uint256 price) internal {
+        _voterToPrice[voter] = price;
+    }
+
+    function _clearVoterPrice(address owner) internal {
+        _voterToPrice[owner] = 0;
+    }
+
+    function _push(uint256 price, uint256 power, uint256 prev) internal {
         if (price <= 0) {
             revert PushingNonValidPrice();
         }
 
-        if (_nodes[_votingNumber][price].power != 0) {
-            remove(price);
+        if (isPriceExists(price)) {
+            _remove(price);
         }
 
         if (prev == 0) {
@@ -74,18 +139,18 @@ contract LinkedList is VotingHistory {
             return;
         }
 
-        uint256 next = _nodes[_votingNumber][prev].next;
+        uint256 next = _nodes[prev].next;
 
         _insert(price, power, prev, next);
     }
 
-    function remove(uint256 price) public {
+    function _remove(uint256 price) internal {
         if (price <= 0) {
             revert RemovingNonExistingNode(price);
         }
 
-        uint256 prev = _nodes[_votingNumber][price].prev;
-        uint256 next = _nodes[_votingNumber][price].next;
+        uint256 prev = _nodes[price].prev;
+        uint256 next = _nodes[price].next;
 
         if (prev == 0) {
             if (head == tail) {
@@ -110,135 +175,78 @@ contract LinkedList is VotingHistory {
         _erase(price);
     }
 
-    function _increaseNodeValueBy(uint256 price, uint256 value) internal {
-        uint256 power = getPowerByPrice(price);
-
-        if (power == 0) {
-            revert UpdatingNonExistingNode(price);
-        }
-
-        _nodes[_votingNumber][price].power = power + value;
-    }
-
-    function _decreaseNodeValueBy(uint256 price, uint256 value) internal {
-        uint256 power = getPowerByPrice(price);
-
-        if (power == 0) {
-            revert UpdatingNonExistingNode(price);
-        }
-
-        if (power < value) {
-            revert DecreasingNodeValueByTooMuch(price, power);
-        }
-
-        _nodes[_votingNumber][price].power = power - value;
-    }
-
-    function _decreaseVoterPricePowerBy(address owner, uint256 amount) internal {
-        uint256 votedPrice = getPriceByVoter(owner);
-        uint256 votedPricePower = getPowerByPrice(votedPrice);
-
-        if (votedPricePower != 0) {
-            _decreaseNodeValueBy(votedPrice, amount);
-
-            emit NodeAction(votedPrice, getPowerByPrice(votedPrice));
-        }
-    }
-
-    function _increaseVoterPricePowerBy(address owner, uint256 amount) internal {
-        uint256 votedPrice = getPriceByVoter(owner);
-        uint256 votedPricePower = getPowerByPrice(votedPrice);
-
-        if (votedPricePower != 0) {
-            _increaseNodeValueBy(votedPrice, amount);
-
-            emit NodeAction(votedPrice, getPowerByPrice(votedPrice));
-        }
-    }
-
-    function clearVoterPrice(address owner) public {
-        _voterToPrice[_votingNumber][owner] = 0;
-    }
-
-    function _setVoterToPrice(address voter, uint256 price) internal {
-        _voterToPrice[_votingNumber][voter] = price;
-    }
-
     function _pushFront(uint256 price, uint256 power) internal {
-        if (_nodes[_votingNumber][price].power != 0) {
-            revert PushingExistingNode(price);
-        }
-
         uint256 nextNode = head;
 
-        _nodes[_votingNumber][price] = Node({prev: 0, next: nextNode, power: power, price: price});
+        _nodes[price].prev = 0;
+        _nodes[price].next = nextNode;
+        _nodes[price].power = power;
+        _nodes[price].price = price;
 
         if (nextNode != 0) {
-            _nodes[_votingNumber][nextNode].prev = price;
+            _nodes[nextNode].prev = price;
         }
 
         head = price;
     }
 
     function _pushBack(uint256 price, uint256 power) internal {
-        if (_nodes[_votingNumber][price].power != 0) {
-            revert PushingExistingNode(price);
-        }
-
         uint256 prevNode = tail;
 
-        _nodes[_votingNumber][price] = Node({prev: prevNode, next: 0, power: power, price: price});
+        _nodes[price].prev = prevNode;
+        _nodes[price].next = 0;
+        _nodes[price].power = power;
+        _nodes[price].price = price;
 
         if (prevNode != 0) {
-            _nodes[_votingNumber][prevNode].next = price;
+            _nodes[prevNode].next = price;
         }
 
         tail = price;
     }
 
     function _insert(uint256 price, uint256 power, uint256 prev, uint256 next) internal {
-        if (_nodes[_votingNumber][price].power != 0) {
-            revert PushingExistingNode(price);
-        }
+        _nodes[price].prev = prev;
+        _nodes[price].next = next;
+        _nodes[price].power = power;
+        _nodes[price].price = price;
 
-        _nodes[_votingNumber][price] = Node({prev: prev, next: next, power: power, price: price});
-
-        _nodes[_votingNumber][next].prev = price;
-        _nodes[_votingNumber][prev].next = price;
+        _nodes[next].prev = price;
+        _nodes[prev].next = price;
     }
 
     function _popBack() internal {
-        if (_nodes[_votingNumber][tail].power == 0) {
+        if (_nodes[tail].power == 0) {
             return;
         }
 
         uint256 nodePrice = tail;
-        uint256 prevNode = _nodes[_votingNumber][nodePrice].prev;
+        uint256 prevNode = _nodes[nodePrice].prev;
 
         tail = prevNode;
-        _nodes[_votingNumber][prevNode].next = 0;
+        _nodes[prevNode].next = 0;
 
-        delete _nodes[_votingNumber][nodePrice];
+        delete _nodes[nodePrice];
     }
 
     function _popFront() internal {
         uint256 nodePrice = head;
-        uint256 nextNode = _nodes[_votingNumber][nodePrice].next;
+        uint256 nextNode = _nodes[nodePrice].next;
 
         head = nextNode;
-        _nodes[_votingNumber][nextNode].prev = 0;
+        _nodes[nextNode].prev = 0;
 
-        delete _nodes[_votingNumber][nodePrice];
+        delete _nodes[nodePrice];
     }
 
     function _erase(uint256 price) internal {
         uint256 nodePrice = price;
-        uint256 nextNode = _nodes[_votingNumber][nodePrice].next;
-        uint256 prevNode = _nodes[_votingNumber][nodePrice].prev;
+        uint256 nextNode = _nodes[nodePrice].next;
+        uint256 prevNode = _nodes[nodePrice].prev;
 
-        _nodes[_votingNumber][nextNode].prev = prevNode;
-        _nodes[_votingNumber][prevNode].next = nextNode;
+        _nodes[nextNode].prev = prevNode;
+        _nodes[prevNode].next = nextNode;
 
-        delete _nodes[_votingNumber][nodePrice];
+        delete _nodes[nodePrice];
     }
 }
