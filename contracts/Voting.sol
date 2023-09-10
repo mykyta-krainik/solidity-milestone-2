@@ -9,7 +9,7 @@ contract Voting is MyERC20, VotingFee, LinkedList {
     error TimeToVoteError(uint256 received, uint256 minTime);
     error TimeToVoteIsNotExpiredError(uint256 timeToVote, uint256 timeLeft);
 
-    error VotingNotStartedError();
+    error VotingIsNotStartedError();
     error VotingIsRunningError();
     error VotingMethodIsNotAvailableError();
     error VotingForNotValidPriceError(uint256 price);
@@ -17,6 +17,7 @@ contract Voting is MyERC20, VotingFee, LinkedList {
     error CallingUnsuitableMethodError();
     error CallingMethodWithWrongTxError();
     error PrevIndexIsNotValid(uint256 index);
+    error TokenAmountIsNotValid(uint256 amount);
 
     error TwoNodesWithSamePriceError(uint256 price);
 
@@ -33,6 +34,7 @@ contract Voting is MyERC20, VotingFee, LinkedList {
     uint256 public tokenPrice;
     uint256 private _minTokenAmount;
     uint256 private _minTokenAmountPercentage = 5;
+    uint256 private _minTokenAmountToVote = 1;
     uint256 private _votingStartedTime;
     uint256 private _timeToVote;
     bool private _isVotingStarted;
@@ -59,7 +61,7 @@ contract Voting is MyERC20, VotingFee, LinkedList {
 
     modifier isVotingStarted() {
         if (!_isVotingStarted) {
-            revert VotingNotStartedError();
+            revert VotingIsNotStartedError();
         }
 
         _;
@@ -73,14 +75,9 @@ contract Voting is MyERC20, VotingFee, LinkedList {
         _;
     }
 
-    modifier isVoterBalanceEnoughToAddPrice(uint256 price) {
-        address voter = msg.sender;
-        uint256 voterBalance = _balances[voter];
-        bool isPriceExist = isPriceExists(price);
-        bool isVoterBalanceEnough = voterBalance >= _minTokenAmount;
-
-        if (!isPriceExist && !isVoterBalanceEnough) {
-            revert BalanceIsNotEnoughError({yourBalance: voterBalance, minBalance: _minTokenAmount});
+    modifier isTokenAmountValid(uint256 amount) {
+        if (amount == 0) {
+            revert TokenAmountIsNotValid(amount);
         }
 
         _;
@@ -94,7 +91,7 @@ contract Voting is MyERC20, VotingFee, LinkedList {
         uint256 decimals
     ) VotingFee(buyFeePercentage, sellFeePercentage, decimals) {
         if (timeToVote < 1 days || timeToVote > 1 weeks) {
-            revert TimeToVoteError({received: timeToVote, minTime: 1 days});
+            revert TimeToVoteError(timeToVote, 1 days);
         }
 
         tokenPrice = _tokenPrice;
@@ -102,8 +99,10 @@ contract Voting is MyERC20, VotingFee, LinkedList {
     }
 
     function startVoting() external isVotingRunning {
-        if (_balances[msg.sender] < _minTokenAmount) {
-            revert BalanceIsNotEnoughError({yourBalance: _balances[msg.sender], minBalance: _minTokenAmount});
+        uint256 balance = balanceOf(msg.sender);
+
+        if (balance < _minTokenAmount) {
+            revert BalanceIsNotEnoughError(balance, _minTokenAmount);
         }
 
         _isVotingStarted = true;
@@ -118,7 +117,7 @@ contract Voting is MyERC20, VotingFee, LinkedList {
         uint256 passedTime = timestamp - _votingStartedTime;
 
         if (passedTime < _timeToVote) {
-            revert TimeToVoteIsNotExpiredError({timeToVote: _timeToVote, timeLeft: _timeToVote - passedTime});
+            revert TimeToVoteIsNotExpiredError(_timeToVote, _timeToVote - passedTime);
         }
 
         _isVotingStarted = false;
@@ -128,32 +127,28 @@ contract Voting is MyERC20, VotingFee, LinkedList {
         if (head != nextNodePrice) {
             tokenPrice = head;
         }
+
+        emit VotingEnded(_votingNumber, timestamp);
+    }
+
+    function getMinTokenAmount() external view returns (uint256) {
+        return _minTokenAmount;
     }
 
     function isVoting() external view returns (bool) {
         return _isVotingStarted;
     }
 
-    function vote(
-        NodeChange calldata nodeInfo
-    ) external checkIfVoterNotVoted(msg.sender) isVoterBalanceEnoughToAddPrice(nodeInfo.price) {
+    function vote(NodeChange calldata nodeInfo) external checkIfVoterNotVoted(msg.sender) isVotingStarted {
         address voter = msg.sender;
-        uint256 voterBalance = _balances[voter];
-        uint256 minTokenAmountToVote = 1;
-        bool canVoterVote = _balances[voter] >= minTokenAmountToVote;
+        uint256 voterBalance = balanceOf(voter);
 
-        if (!canVoterVote) {
-            revert BalanceIsNotEnoughError({yourBalance: voterBalance, minBalance: minTokenAmountToVote});
+        if (!_isEnoughToken(nodeInfo.price)) {
+            revert BalanceIsNotEnoughError(voterBalance, _minTokenAmountToVote);
         }
 
         if (nodeInfo.price <= 0) {
             revert PushingNonValidPrice();
-        }
-
-        bool isTheSame = getPriceByVoter(voter) == nodeInfo.price;
-
-        if (isTheSame) {
-            revert VotingForTheSamePriceError(nodeInfo.price);
         }
 
         if (nodeInfo.power < 0) {
@@ -168,9 +163,9 @@ contract Voting is MyERC20, VotingFee, LinkedList {
         }
 
         uint256 prevNodePower = getPowerByPrice(nodeInfo.prev);
-        uint256 nextNodePower = getPowerByPrice(getNodeByPrice(nodeInfo.prev).next);
+        uint256 nextNodePower = getPowerByPrice(getNextNode(nodeInfo.prev).price);
 
-        if (prevNodePower < nodeInfo.power || nodeInfo.power < nextNodePower) {
+        if ((nodeInfo.prev != 0 && prevNodePower < nodeInfo.power) || nodeInfo.power < nextNodePower) {
             revert PrevIndexIsNotValid(nodeInfo.power);
         }
 
@@ -178,202 +173,69 @@ contract Voting is MyERC20, VotingFee, LinkedList {
             revert NodeIndexIsNotValidError(nodeInfo.prev);
         }
 
-        bool isPriceExist = isPriceExists(nodeInfo.prev);
-
-        if (nodeInfo.prev != 0 && !isPriceExist) {
+        if (nodeInfo.prev != 0 && !isPriceExists(nodeInfo.prev)) {
             revert NodeIndexIsNotValidError(nodeInfo.prev);
         }
 
-        _push(nodeInfo.price, nodeInfo.power, nodeInfo.prev);
+        push(nodeInfo.price, nodeInfo.power, nodeInfo.prev);
+        _setVoterToPrice(voter, nodeInfo.price);
     }
 
     function voteWithSwap(
-        NodeChange[2] calldata votes
-    )
-        external
-        checkIfVoterVoted(msg.sender)
-        isVoterBalanceEnoughToAddPrice(votes[0].price)
-        isVoterBalanceEnoughToAddPrice(votes[1].price)
-    {
+        NodeChange calldata prevPriceChange,
+        NodeChange calldata newPriceChange
+    ) external checkIfVoterVoted(msg.sender) isVotingStarted {
         address voter = msg.sender;
-        uint256 voterBalance = _balances[voter];
-        uint256 minTokenAmountToVote = 1;
-        bool canVoterVote = _balances[msg.sender] >= minTokenAmountToVote;
+        uint256 voterBalance = balanceOf(voter);
 
-        if (!canVoterVote) {
-            revert BalanceIsNotEnoughError({yourBalance: voterBalance, minBalance: minTokenAmountToVote});
+        if (!_isEnoughToken(prevPriceChange.price) || !_isEnoughToken(newPriceChange.price)) {
+            revert BalanceIsNotEnoughError(voterBalance, _minTokenAmountToVote);
         }
 
-        uint256 prevVoterPrice = getPriceByVoter(voter);
+        uint256 voterPrevPrice = getPriceByVoter(voter);
 
-        bool hasPrevTx = votes[0].price == prevVoterPrice || votes[1].price == prevVoterPrice;
+        if (prevPriceChange.price == newPriceChange.price) {
+            revert VotingForTheSamePriceError(newPriceChange.price);
+        }
 
-        if (!hasPrevTx) {
+        if (prevPriceChange.price != voterPrevPrice || newPriceChange.price != voterPrevPrice) {
             revert CallingMethodWithWrongTxError();
         }
 
-        NodeChange memory prevPriceChange;
-        NodeChange memory newPriceChange;
+        uint256 newPrice = prevPriceChange.price != voterPrevPrice ? prevPriceChange.price : newPriceChange.price;
 
-        (prevPriceChange, newPriceChange) = votes[0].price == prevVoterPrice
-            ? (votes[0], votes[1])
-            : (votes[1], votes[0]);
-
-        if (prevPriceChange.price == newPriceChange.price) {
-            revert VotingForTheSamePriceError(prevPriceChange.price);
-        }
-
-        uint256 prevPricePrevPower = getPowerByPrice(prevPriceChange.price);
-        uint256 newPricePrevPower = getPowerByPrice(newPriceChange.price);
-
-        if (prevPriceChange.power + voterBalance != prevPricePrevPower) {
-            revert PowerIsNotValidError(prevPriceChange.power);
-        }
-
-        if (newPricePrevPower + voterBalance != newPriceChange.power) {
-            revert PowerIsNotValidError(newPriceChange.power);
-        }
-
-        if (prevPriceChange.prev == newPriceChange.price) {
-            if (!_areAdjacentNodesPositionsValid(newPriceChange, prevPriceChange)) {
-                revert PrevIndexIsNotValid(prevPriceChange.prev);
-            }
-
-            _pushAdjacentNodes(newPriceChange, prevPriceChange);
-
-            return;
-        } else if (newPriceChange.prev == prevPriceChange.price) {
-            if (!_areAdjacentNodesPositionsValid(prevPriceChange, newPriceChange)) {
-                revert PrevIndexIsNotValid(newPriceChange.prev);
-            }
-
-            _pushAdjacentNodes(prevPriceChange, newPriceChange);
-
-            return;
-        }
-
-        if (!_isNodeInValidPosition(prevPriceChange.power, prevPriceChange.prev)) {
-            revert PowerIsNotValidError(prevPriceChange.power);
-        }
-
-        if (!_isNodeInValidPosition(newPriceChange.power, newPriceChange.prev)) {
-            revert PowerIsNotValidError(newPriceChange.power);
-        }
-
-        _pushAdjacentNodes(prevPriceChange, newPriceChange);
+        _processSwapping(
+            prevPriceChange,
+            newPriceChange,
+            voterBalance,
+            voterPrevPrice,
+            newPrice,
+            address(0),
+            address(0)
+        );
+        _setVoterToPrice(voter, newPrice);
     }
 
-    function buy(uint256 amount) external payable checkIfVoterNotVoted(msg.sender) {
-        uint256 requiredEtherAmount = tokenPrice * amount;
-        uint256 fee = _getPercentage(requiredEtherAmount, _buyFeePercentage);
-        uint256 totalEtherAmount = requiredEtherAmount + fee;
-        uint256 receivedEtherAmount = msg.value;
-        address sender = msg.sender;
-
-        if (receivedEtherAmount < totalEtherAmount) {
-            revert EtherError({received: receivedEtherAmount, required: totalEtherAmount});
-        }
-
-        _mint(sender, amount);
-
-        if (receivedEtherAmount > totalEtherAmount) {
-            uint256 change = receivedEtherAmount - totalEtherAmount;
-
-            payable(sender).transfer(change);
-        }
-
-        _minTokenAmount = _getPercentage(totalSupply(), _minTokenAmountPercentage);
-        _totalFees += fee;
+    function buy(uint256 amount) external payable checkIfVoterNotVoted(msg.sender) isTokenAmountValid(amount) {
+        _buy(amount, 0);
     }
 
     function buyWithSwap(
         uint256 amount,
         uint256 prev
-    ) external payable checkIfVoterVoted(msg.sender) isIndexValid(prev) {
-        uint256 requiredEtherAmount = tokenPrice * amount;
-        uint256 fee = _getPercentage(requiredEtherAmount, _buyFeePercentage);
-        uint256 totalEtherAmount = requiredEtherAmount + fee;
-        uint256 receivedEtherAmount = msg.value;
-        address sender = msg.sender;
-
-        if (receivedEtherAmount < totalEtherAmount) {
-            revert EtherError({received: receivedEtherAmount, required: totalEtherAmount});
-        }
-
-        uint256 voterPrice = getPriceByVoter(sender);
-        uint256 voterPricePower = getPowerByPrice(voterPrice);
-        uint256 newPricePower = voterPricePower + amount;
-
-        if (!_isNodeInValidPosition(newPricePower, prev)) {
-            revert PrevIndexIsNotValid(prev);
-        }
-
-        _mint(sender, amount);
-        _push(voterPrice, newPricePower, prev);
-
-        if (receivedEtherAmount > totalEtherAmount) {
-            uint256 change = receivedEtherAmount - totalEtherAmount;
-
-            payable(sender).transfer(change);
-        }
-
-        _minTokenAmount = _getPercentage(totalSupply(), _minTokenAmountPercentage);
-        _totalFees += fee;
+    ) external payable checkIfVoterVoted(msg.sender) isIndexValid(prev) isTokenAmountValid(amount) {
+        _buy(amount, prev);
     }
 
-    function sell(uint256 amount) external checkIfVoterNotVoted(msg.sender) {
-        address sender = msg.sender;
-
-        if (_balances[sender] < amount) {
-            revert SellingMoreThanYouHaveError(amount);
-        }
-
-        uint256 etherAmount = tokenPrice * amount;
-        uint256 fee = _getPercentage(etherAmount, _sellFeePercentage);
-        uint256 etherToReturn = etherAmount - fee;
-
-        if (address(this).balance < etherToReturn) {
-            revert CantReturnEtherError();
-        }
-
-        _burn(sender, amount);
-
-        _minTokenAmount = _getPercentage(totalSupply(), _minTokenAmountPercentage);
-        _totalFees += fee;
-
-        payable(sender).transfer(etherToReturn);
+    function sell(uint256 amount) external checkIfVoterNotVoted(msg.sender) isTokenAmountValid(amount) {
+        _sell(amount, 0);
     }
 
-    function sellWithSwap(uint256 amount, uint256 prev) external checkIfVoterVoted(msg.sender) isIndexValid(prev) {
-        address sender = msg.sender;
-
-        if (_balances[sender] < amount) {
-            revert SellingMoreThanYouHaveError(amount);
-        }
-
-        uint256 etherAmount = tokenPrice * amount;
-        uint256 fee = _getPercentage(etherAmount, _sellFeePercentage);
-        uint256 etherToReturn = etherAmount - fee;
-
-        if (address(this).balance < etherToReturn) {
-            revert CantReturnEtherError();
-        }
-
-        uint256 voterPrice = getPriceByVoter(sender);
-        uint256 voterPricePower = getPowerByPrice(voterPrice);
-        uint256 newPricePower = voterPricePower - amount;
-
-        if (!_isNodeInValidPosition(newPricePower, prev)) {
-            revert PrevIndexIsNotValid(prev);
-        }
-
-        _burn(sender, amount);
-        _push(voterPrice, newPricePower, prev);
-
-        _minTokenAmount = _getPercentage(totalSupply(), _minTokenAmountPercentage);
-        _totalFees += fee;
-
-        payable(sender).transfer(etherToReturn);
+    function sellWithSwap(
+        uint256 amount,
+        uint256 prev
+    ) external checkIfVoterVoted(msg.sender) isIndexValid(prev) isTokenAmountValid(amount) {
+        _sell(amount, prev);
     }
 
     function transfer(
@@ -402,15 +264,16 @@ contract Voting is MyERC20, VotingFee, LinkedList {
     function transferWithDoubleSwap(
         address to,
         uint256 amount,
-        NodeChange[2] calldata changes
+        NodeChange calldata change1,
+        NodeChange calldata change2
     ) external checkIfVoterVoted(msg.sender) checkIfVoterVoted(to) returns (bool) {
         uint256 senderPrice = getPriceByVoter(msg.sender);
         uint256 receiverPrice = getPriceByVoter(to);
 
-        bool hasSenderPrice = changes[0].price == senderPrice || changes[1].price == senderPrice;
-        bool hasReceiverPrice = changes[0].price == receiverPrice || changes[1].price == receiverPrice;
-
-        if (!hasSenderPrice || !hasReceiverPrice) {
+        if (
+            (change1.price != senderPrice && change2.price != senderPrice) ||
+            (change1.price != receiverPrice && change2.price != receiverPrice)
+        ) {
             revert CallingMethodWithWrongTxError();
         }
 
@@ -418,57 +281,7 @@ contract Voting is MyERC20, VotingFee, LinkedList {
             return super.transfer(to, amount);
         }
 
-        NodeChange memory senderChange;
-        NodeChange memory receiverChange;
-
-        (senderChange, receiverChange) = changes[0].price == senderPrice
-            ? (changes[0], changes[1])
-            : (changes[1], changes[0]);
-
-        uint256 senderPricePower = getPowerByPrice(senderPrice);
-        uint256 receiverPricePower = getPowerByPrice(receiverPrice);
-
-        if (senderChange.power + amount != senderPricePower) {
-            revert PowerIsNotValidError(senderChange.power);
-        }
-
-        if (receiverChange.power - amount != receiverPricePower) {
-            revert PowerIsNotValidError(receiverChange.power);
-        }
-
-        if (senderChange.prev == receiverPrice) {
-            if (!_areAdjacentNodesPositionsValid(receiverChange, senderChange)) {
-                revert PrevIndexIsNotValid(senderChange.prev);
-            }
-
-            super.transfer(to, amount);
-
-            _pushAdjacentNodes(receiverChange, senderChange);
-
-            return true;
-        } else if (receiverChange.prev == senderPrice) {
-            if (!_areAdjacentNodesPositionsValid(senderChange, receiverChange)) {
-                revert PrevIndexIsNotValid(receiverChange.prev);
-            }
-
-            super.transfer(to, amount);
-
-            _pushAdjacentNodes(senderChange, receiverChange);
-
-            return true;
-        }
-
-        if (!_isNodeInValidPosition(senderChange.power, senderChange.prev)) {
-            revert PowerIsNotValidError(senderChange.power);
-        }
-
-        if (!_isNodeInValidPosition(receiverChange.power, receiverChange.prev)) {
-            revert PowerIsNotValidError(receiverChange.power);
-        }
-
-        super.transfer(to, amount);
-
-        _pushAdjacentNodes(senderChange, receiverChange);
+        _processSwapping(change1, change2, amount, senderPrice, receiverPrice, address(0), to);
 
         return true;
     }
@@ -486,7 +299,10 @@ contract Voting is MyERC20, VotingFee, LinkedList {
             revert CallingMethodWithWrongTxError();
         }
 
-        if (!isPriceExists(change.prev) || !_isNodeInValidPosition(change.power, change.prev)) {
+        if (
+            (change.prev != 0 && !isPriceExists(change.prev)) ||
+            !_isNodeInValidPosition(change.price, change.power, change.prev)
+        ) {
             revert NodeIndexIsNotValidError(change.prev);
         }
 
@@ -497,7 +313,7 @@ contract Voting is MyERC20, VotingFee, LinkedList {
         }
 
         super.transfer(to, amount);
-        _push(change.price, change.power, change.prev);
+        push(change.price, change.power, change.prev);
 
         return true;
     }
@@ -534,73 +350,24 @@ contract Voting is MyERC20, VotingFee, LinkedList {
         address owner,
         address to,
         uint256 amount,
-        NodeChange[2] calldata changes
+        NodeChange calldata change1,
+        NodeChange calldata change2
     ) external checkIfVoterVoted(owner) checkIfVoterVoted(to) returns (bool) {
         uint256 senderPrice = getPriceByVoter(owner);
         uint256 receiverPrice = getPriceByVoter(to);
 
-        bool hasSenderPrice = changes[0].price == senderPrice || changes[1].price == senderPrice;
-        bool hasReceiverPrice = changes[0].price == receiverPrice || changes[1].price == receiverPrice;
-
-        if (!hasSenderPrice || !hasReceiverPrice) {
+        if (
+            (change1.price != senderPrice && change2.price != senderPrice) ||
+            (change1.price != receiverPrice && change2.price != receiverPrice)
+        ) {
             revert CallingMethodWithWrongTxError();
         }
 
         if (senderPrice == receiverPrice) {
-            return super.transfer(to, amount);
+            return super.transferFrom(owner, to, amount);
         }
 
-        NodeChange memory senderChange;
-        NodeChange memory receiverChange;
-
-        (senderChange, receiverChange) = changes[0].price == senderPrice
-            ? (changes[0], changes[1])
-            : (changes[1], changes[0]);
-
-        uint256 senderPricePower = getPowerByPrice(senderPrice);
-        uint256 receiverPricePower = getPowerByPrice(receiverPrice);
-
-        if (senderChange.power + amount != senderPricePower) {
-            revert PowerIsNotValidError(senderChange.power);
-        }
-
-        if (receiverChange.power - amount != receiverPricePower) {
-            revert PowerIsNotValidError(receiverChange.power);
-        }
-
-        if (senderChange.prev == receiverChange.price) {
-            if (!_areAdjacentNodesPositionsValid(receiverChange, senderChange)) {
-                revert PrevIndexIsNotValid(senderChange.prev);
-            }
-
-            super.transferFrom(owner, to, amount);
-
-            _pushAdjacentNodes(receiverChange, senderChange);
-
-            return true;
-        } else if (receiverChange.prev == senderChange.price) {
-            if (!_areAdjacentNodesPositionsValid(senderChange, receiverChange)) {
-                revert PrevIndexIsNotValid(receiverChange.prev);
-            }
-
-            super.transferFrom(owner, to, amount);
-
-            _pushAdjacentNodes(senderChange, receiverChange);
-
-            return true;
-        }
-
-        if (!_isNodeInValidPosition(senderChange.power, senderChange.prev)) {
-            revert PowerIsNotValidError(senderChange.power);
-        }
-
-        if (!_isNodeInValidPosition(receiverChange.power, receiverChange.prev)) {
-            revert PowerIsNotValidError(receiverChange.power);
-        }
-
-        super.transferFrom(owner, to, amount);
-
-        _pushAdjacentNodes(senderChange, receiverChange);
+        _processSwapping(change1, change2, amount, senderPrice, receiverPrice, owner, to);
 
         return true;
     }
@@ -628,20 +395,173 @@ contract Voting is MyERC20, VotingFee, LinkedList {
         if (
             change.power < 0 ||
             change.power + amount != pricePrevPower ||
-            !_isNodeInValidPosition(change.power, change.prev)
+            !_isNodeInValidPosition(change.price, change.power, change.prev)
         ) {
             revert PowerIsNotValidError(change.power);
         }
 
         super.transferFrom(from, to, amount);
-        _push(change.price, change.power, change.prev);
+        push(change.price, change.power, change.prev);
 
         return true;
     }
 
+    function _buy(uint256 amount, uint256 prev) private {
+        uint256 requiredEtherAmount = tokenPrice * amount;
+        uint256 fee = _getPercentage(requiredEtherAmount, _buyFeePercentage);
+        uint256 totalEtherAmount = requiredEtherAmount + fee;
+        uint256 receivedEtherAmount = msg.value;
+        address sender = msg.sender;
+
+        if (receivedEtherAmount < totalEtherAmount) {
+            revert EtherError(receivedEtherAmount, totalEtherAmount);
+        }
+
+        uint256 voterPrice;
+        uint256 voterPricePower;
+        uint256 newPricePower;
+
+        if (msg.sig == this.buyWithSwap.selector) {
+            voterPrice = getPriceByVoter(sender);
+            voterPricePower = getPowerByPrice(voterPrice);
+            newPricePower = voterPricePower + amount;
+
+            if (!_isNodeInValidPosition(voterPrice, newPricePower, prev)) {
+                revert PrevIndexIsNotValid(prev);
+            }
+        }
+
+        _mint(sender, amount);
+
+        if (msg.sig == this.buyWithSwap.selector) {
+            push(voterPrice, newPricePower, prev);
+        }
+
+        if (receivedEtherAmount > totalEtherAmount) {
+            uint256 change = receivedEtherAmount - totalEtherAmount;
+
+            payable(sender).transfer(change);
+        }
+
+        _minTokenAmount = _getPercentage(totalSupply(), _minTokenAmountPercentage);
+        _totalFees += fee;
+    }
+
+    function _sell(uint256 amount, uint256 prev) private {
+        address sender = msg.sender;
+
+        if (balanceOf(sender) < amount) {
+            revert SellingMoreThanYouHaveError(amount);
+        }
+
+        uint256 etherAmount = tokenPrice * amount;
+        uint256 fee = _getPercentage(etherAmount, _sellFeePercentage);
+        uint256 etherToReturn = etherAmount - fee;
+
+        if (address(this).balance < etherToReturn) {
+            revert CantReturnEtherError();
+        }
+
+        uint256 voterPrice;
+        uint256 voterPricePower;
+        uint256 newPricePower;
+
+        if (msg.sig == this.sellWithSwap.selector) {
+            voterPrice = getPriceByVoter(sender);
+            voterPricePower = getPowerByPrice(voterPrice);
+            newPricePower = voterPricePower - amount;
+
+            if (!_isNodeInValidPosition(voterPrice, newPricePower, prev)) {
+                revert PrevIndexIsNotValid(prev);
+            }
+        }
+
+        _burn(sender, amount);
+
+        if (msg.sig == this.sellWithSwap.selector) {
+            push(voterPrice, newPricePower, prev);
+        }
+
+        _minTokenAmount = _getPercentage(totalSupply(), _minTokenAmountPercentage);
+        _totalFees += fee;
+
+        payable(sender).transfer(etherToReturn);
+    }
+
+    function _processSwapping(
+        NodeChange calldata nodeChange1,
+        NodeChange calldata nodeChange2,
+        uint256 amount,
+        uint256 price1,
+        uint256 price2,
+        address owner,
+        address to
+    ) private {
+        (nodeChange1, nodeChange2) = nodeChange1.price == price1
+            ? (nodeChange1, nodeChange2)
+            : (nodeChange2, nodeChange1);
+
+        uint256 senderPricePower = getPowerByPrice(price1);
+        uint256 receiverPricePower = getPowerByPrice(price2);
+
+        if (nodeChange1.power + amount != senderPricePower) {
+            revert PowerIsNotValidError(nodeChange1.power);
+        }
+
+        if (nodeChange2.power - amount != receiverPricePower) {
+            revert PowerIsNotValidError(nodeChange2.power);
+        }
+
+        if (nodeChange1.prev == nodeChange2.price) {
+            _swapAdjacent(nodeChange2, nodeChange1, to, owner, amount);
+
+            return;
+        } else if (nodeChange2.prev == nodeChange1.price) {
+            _swapAdjacent(nodeChange1, nodeChange2, to, owner, amount);
+
+            return;
+        }
+
+        if (!_isNodeInValidPosition(nodeChange1.price, nodeChange1.power, nodeChange1.prev)) {
+            revert PowerIsNotValidError(nodeChange1.power);
+        }
+
+        if (!_isNodeInValidPosition(nodeChange2.price, nodeChange2.power, nodeChange2.prev)) {
+            revert PowerIsNotValidError(nodeChange2.power);
+        }
+
+        if (msg.sig == this.transferWithDoubleSwap.selector) {
+            super.transfer(to, amount);
+        } else if (msg.sig == this.transferFromWithDoubleSwap.selector) {
+            super.transferFrom(owner, to, amount);
+        }
+
+        _pushAdjacentNodes(nodeChange1, nodeChange2);
+    }
+
+    function _swapAdjacent(
+        NodeChange memory firstNode,
+        NodeChange memory secondNode,
+        address to,
+        address owner,
+        uint256 amount
+    ) internal {
+        if (!_areAdjacentNodesPositionsValid(firstNode, secondNode)) {
+            revert PrevIndexIsNotValid(secondNode.prev);
+        }
+
+        if (msg.sig == this.transferWithDoubleSwap.selector) {
+            super.transfer(to, amount);
+        } else if (msg.sig == this.transferFromWithDoubleSwap.selector) {
+            super.transferFrom(owner, to, amount);
+        }
+
+        _pushAdjacentNodes(firstNode, secondNode);
+    }
+
     function _pushAdjacentNodes(NodeChange memory firstNode, NodeChange memory secondNode) internal {
-        _push(firstNode.price, firstNode.power, firstNode.prev);
-        _push(secondNode.price, secondNode.power, secondNode.price);
+        push(firstNode.price, firstNode.power, firstNode.prev);
+        push(secondNode.price, secondNode.power, secondNode.price);
     }
 
     function _areAdjacentNodesPositionsValid(
@@ -652,5 +572,18 @@ contract Voting is MyERC20, VotingFee, LinkedList {
             secondNode.power <= firstNode.power &&
             firstNode.power <= getPowerByPrice(firstNode.prev) &&
             secondNode.power >= getNextNode(firstNode.prev).power;
+    }
+
+    function _isEnoughToken(uint256 price) internal view returns (bool) {
+        address voter = msg.sender;
+        uint256 voterBalance = balanceOf(voter);
+        bool isPriceExist = isPriceExists(price);
+        bool isVoterBalanceEnough = voterBalance >= _minTokenAmount;
+
+        if ((!isPriceExist && !isVoterBalanceEnough) || voterBalance < _minTokenAmountToVote) {
+            return false;
+        }
+
+        return true;
     }
 }

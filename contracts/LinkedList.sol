@@ -17,27 +17,32 @@ contract LinkedList {
         uint256 next;
         uint256 power;
         uint256 price;
+        uint256 voteId;
     }
-    // TODO: rewrite to use array
+
+    struct Price {
+        uint256 price;
+        uint256 voteId;
+    }
+
+    struct Voted {
+        bool voted;
+        uint256 voteId;
+    }
+
     // price => node
     mapping(uint256 => Node) private _nodes;
     // voter => price
-    mapping(address => uint256) private _voterToPrice;
+    mapping(address => Price) private _voterToPrice;
     // price => isVoted
-    mapping(uint256 => bool) private _priceToIsVoted;
+    uint256 internal _votingNumber;
 
     // price with the highest power
     uint256 public head = 0;
     // price with the lowest power
     uint256 public tail = 0;
 
-    uint256 internal _votingNumber = 0;
-
     modifier isIndexValid(uint256 index) {
-        if (index < 0) {
-            revert NodeIndexIsNotValidError(index);
-        }
-
         bool isPriceExist = isPriceExists(index);
 
         if (index != 0 && !isPriceExist) {
@@ -48,11 +53,17 @@ contract LinkedList {
     }
 
     function getNodeByPrice(uint256 price) public view returns (Node memory) {
-        return _nodes[price];
+        Node memory node = _nodes[price];
+
+        if (node.voteId == _votingNumber) {
+            return node;
+        }
+
+        return Node(0, 0, 0, 0, 0);
     }
 
     function getPowerByPrice(uint256 price) public view returns (uint256) {
-        return _nodes[price].power;
+        return getNodeByPrice(price).power;
     }
 
     function getTopPrice() external view returns (uint256) {
@@ -60,34 +71,54 @@ contract LinkedList {
     }
 
     function getPrevNode(uint256 price) public view returns (Node memory) {
-        uint256 prevNodePrice = _nodes[price].prev;
+        Node memory priceNode = getNodeByPrice(price);
 
-        return getNodeByPrice(prevNodePrice);
+        return getNodeByPrice(priceNode.prev);
     }
 
     function getNextNode(uint256 price) public view returns (Node memory) {
-        uint256 nextNodePrice = _nodes[price].next;
+        Node memory priceNode = getNodeByPrice(price);
 
-        return getNodeByPrice(nextNodePrice);
+        return getNodeByPrice(priceNode.next);
     }
 
-    function _isNodeInValidPosition(uint256 power, uint256 prev) internal view returns (bool) {
+    function _isNodeInValidPosition(uint256 price, uint256 power, uint256 prev) internal view returns (bool) {
         uint256 prevNodePower = getPowerByPrice(prev);
-        uint256 nextNodePower = getNextNode(prev).power;
+        Node memory nextNode;
 
-        if (prev == 0 && power >= nextNodePower) {
-            return true;
+        if (prev == 0) {
+            nextNode = getNodeByPrice(head);
+
+            if (price == nextNode.price) {
+                nextNode = getNodeByPrice(nextNode.next);
+            }
+        } else {
+            nextNode = getNextNode(prev);
         }
 
-        if (prevNodePower >= power && power >= nextNodePower) {
+        uint256 nextNodeNextNodePower = nextNode.power;
+
+        if (price == nextNode.price) {
+            nextNodeNextNodePower = getPowerByPrice(nextNode.next);
+        }
+
+        if (
+            (prev == 0 && power >= nextNodeNextNodePower) || (prevNodePower >= power && power >= nextNodeNextNodePower)
+        ) {
             return true;
         }
 
         return false;
     }
 
-    function getPriceByVoter(address owner) public view returns (uint256) {
-        return _voterToPrice[owner];
+    function getPriceByVoter(address voter) public view returns (uint256) {
+        Price memory priceInfo = _voterToPrice[voter];
+
+        if (priceInfo.voteId == _votingNumber) {
+            return priceInfo.price;
+        }
+
+        return 0;
     }
 
     function isVoterVoted() external view returns (bool) {
@@ -95,28 +126,25 @@ contract LinkedList {
     }
 
     function isPriceExists(uint256 price) public view returns (bool) {
-        return _priceToIsVoted[price];
-    }
-
-    function _setPriceToVoted(uint256 price) internal {
-        _priceToIsVoted[price] = true;
+        return getNodeByPrice(price).price != 0;
     }
 
     function _setVoterToPrice(address voter, uint256 price) internal {
-        _voterToPrice[voter] = price;
+        _voterToPrice[voter].price = price;
+        _voterToPrice[voter].voteId = _votingNumber;
     }
 
-    function _clearVoterPrice(address owner) internal {
-        _voterToPrice[owner] = 0;
+    function _clearVoterPrice(address voter) internal {
+        delete _voterToPrice[voter];
     }
 
-    function _push(uint256 price, uint256 power, uint256 prev) internal {
+    function push(uint256 price, uint256 power, uint256 prev) public isIndexValid(prev) {
         if (price <= 0) {
             revert PushingNonValidPrice();
         }
 
         if (isPriceExists(price)) {
-            _remove(price);
+            remove(price);
         }
 
         if (prev == 0) {
@@ -139,18 +167,23 @@ contract LinkedList {
             return;
         }
 
-        uint256 next = _nodes[prev].next;
+        uint256 next = getNodeByPrice(prev).next;
 
         _insert(price, power, prev, next);
     }
 
-    function _remove(uint256 price) internal {
+    function remove(uint256 price) public {
         if (price <= 0) {
             revert RemovingNonExistingNode(price);
         }
 
-        uint256 prev = _nodes[price].prev;
-        uint256 next = _nodes[price].next;
+        if (!isPriceExists(price)) {
+            revert RemovingNonExistingNode(price);
+        }
+
+        Node memory node = getNodeByPrice(price);
+        uint256 prev = node.prev;
+        uint256 next = node.next;
 
         if (prev == 0) {
             if (head == tail) {
@@ -175,13 +208,14 @@ contract LinkedList {
         _erase(price);
     }
 
-    function _pushFront(uint256 price, uint256 power) internal {
+    function _pushFront(uint256 price, uint256 power) private {
         uint256 nextNode = head;
 
         _nodes[price].prev = 0;
         _nodes[price].next = nextNode;
         _nodes[price].power = power;
         _nodes[price].price = price;
+        _nodes[price].voteId = _votingNumber;
 
         if (nextNode != 0) {
             _nodes[nextNode].prev = price;
@@ -190,13 +224,14 @@ contract LinkedList {
         head = price;
     }
 
-    function _pushBack(uint256 price, uint256 power) internal {
+    function _pushBack(uint256 price, uint256 power) private {
         uint256 prevNode = tail;
 
         _nodes[price].prev = prevNode;
         _nodes[price].next = 0;
         _nodes[price].power = power;
         _nodes[price].price = price;
+        _nodes[price].voteId = _votingNumber;
 
         if (prevNode != 0) {
             _nodes[prevNode].next = price;
@@ -205,23 +240,24 @@ contract LinkedList {
         tail = price;
     }
 
-    function _insert(uint256 price, uint256 power, uint256 prev, uint256 next) internal {
+    function _insert(uint256 price, uint256 power, uint256 prev, uint256 next) private {
         _nodes[price].prev = prev;
         _nodes[price].next = next;
         _nodes[price].power = power;
         _nodes[price].price = price;
+        _nodes[price].voteId = _votingNumber;
 
         _nodes[next].prev = price;
         _nodes[prev].next = price;
     }
 
-    function _popBack() internal {
+    function _popBack() private {
         if (_nodes[tail].power == 0) {
             return;
         }
 
         uint256 nodePrice = tail;
-        uint256 prevNode = _nodes[nodePrice].prev;
+        uint256 prevNode = getNodeByPrice(nodePrice).prev;
 
         tail = prevNode;
         _nodes[prevNode].next = 0;
@@ -229,9 +265,9 @@ contract LinkedList {
         delete _nodes[nodePrice];
     }
 
-    function _popFront() internal {
+    function _popFront() private {
         uint256 nodePrice = head;
-        uint256 nextNode = _nodes[nodePrice].next;
+        uint256 nextNode = getNodeByPrice(nodePrice).next;
 
         head = nextNode;
         _nodes[nextNode].prev = 0;
@@ -239,9 +275,9 @@ contract LinkedList {
         delete _nodes[nodePrice];
     }
 
-    function _erase(uint256 price) internal {
+    function _erase(uint256 price) private {
         uint256 nodePrice = price;
-        uint256 nextNode = _nodes[nodePrice].next;
+        uint256 nextNode = getNodeByPrice(nodePrice).next;
         uint256 prevNode = _nodes[nodePrice].prev;
 
         _nodes[nextNode].prev = prevNode;

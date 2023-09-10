@@ -27,14 +27,12 @@ contract Percents {
     uint256 internal _minPercentage = 0;
 
     constructor(uint256 decimals) {
-        _decimals = decimals;
-        _percentageMultiplier = 100 * 10 ** _decimals;
-        _maxPercentage = _percentageMultiplier;
+        setDecimals(decimals);
     }
 
-    function setDecimals(uint256 decimals) external notValidDecimals(_decimals) {
+    function setDecimals(uint256 decimals) public virtual notValidDecimals(_decimals) {
         _decimals = decimals;
-        _percentageMultiplier = 10 ** _decimals;
+        _percentageMultiplier = 100 * (10 ** _decimals);
         _maxPercentage = _percentageMultiplier;
     }
 
@@ -42,6 +40,6 @@ contract Percents {
         uint256 amount,
         uint256 percentage
     ) internal view notValidPercentage(percentage) returns (uint256) {
-        return (amount * percentage) / _maxPercentage;
+        return ((amount * 10 ** _decimals) * percentage) / _maxPercentage;
     }
 }
