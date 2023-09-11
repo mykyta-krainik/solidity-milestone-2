@@ -32,12 +32,12 @@ contract Voting is MyERC20, VotingFee, LinkedList {
     }
 
     uint256 public tokenPrice;
-    uint256 private _minTokenAmount;
-    uint256 private _minTokenAmountPercentage = 5;
-    uint256 private _minTokenAmountToVote = 1;
-    uint256 private _votingStartedTime;
-    uint256 private _timeToVote;
-    bool private _isVotingStarted;
+    uint256 internal _minTokenAmount;
+    uint256 internal _minTokenAmountPercentage = 5;
+    uint256 internal _minTokenAmountToVote = 1;
+    uint256 internal _votingStartedTime;
+    uint256 internal _timeToVote;
+    bool internal _isVotingStarted;
 
     event VotingStarted(uint256 indexed votingNumber, uint256 indexed timeStarted);
     event VotingEnded(uint256 indexed votingNumber, uint256 indexed timeEnded);
@@ -70,14 +70,6 @@ contract Voting is MyERC20, VotingFee, LinkedList {
     modifier isVotingRunning() {
         if (_isVotingStarted) {
             revert VotingIsRunningError();
-        }
-
-        _;
-    }
-
-    modifier isTokenAmountValid(uint256 amount) {
-        if (amount == 0) {
-            revert TokenAmountIsNotValid(amount);
         }
 
         _;
@@ -216,25 +208,38 @@ contract Voting is MyERC20, VotingFee, LinkedList {
         _setVoterToPrice(voter, newPrice);
     }
 
-    function buy(uint256 amount) external payable checkIfVoterNotVoted(msg.sender) isTokenAmountValid(amount) {
+    function buy(uint256 amount) external payable checkIfVoterNotVoted(msg.sender) {
+        if (!_isTokenAmountValid(amount)) {
+            revert TokenAmountIsNotValid(amount);
+        }
+
         _buy(amount, 0);
     }
 
     function buyWithSwap(
         uint256 amount,
         uint256 prev
-    ) external payable checkIfVoterVoted(msg.sender) isIndexValid(prev) isTokenAmountValid(amount) {
+    ) external payable checkIfVoterVoted(msg.sender) isIndexValid(prev) {
+        if (!_isTokenAmountValid(amount)) {
+            revert TokenAmountIsNotValid(amount);
+        }
+
         _buy(amount, prev);
     }
 
-    function sell(uint256 amount) external checkIfVoterNotVoted(msg.sender) isTokenAmountValid(amount) {
+    function sell(uint256 amount) external checkIfVoterNotVoted(msg.sender) {
+        if (!_isTokenAmountValid(amount)) {
+            revert TokenAmountIsNotValid(amount);
+        }
+
         _sell(amount, 0);
     }
 
-    function sellWithSwap(
-        uint256 amount,
-        uint256 prev
-    ) external checkIfVoterVoted(msg.sender) isIndexValid(prev) isTokenAmountValid(amount) {
+    function sellWithSwap(uint256 amount, uint256 prev) external checkIfVoterVoted(msg.sender) isIndexValid(prev) {
+        if (!_isTokenAmountValid(amount)) {
+            revert TokenAmountIsNotValid(amount);
+        }
+
         _sell(amount, prev);
     }
 
@@ -242,10 +247,22 @@ contract Voting is MyERC20, VotingFee, LinkedList {
         address to,
         uint256 amount
     ) public override checkIfVoterNotVoted(msg.sender) checkIfVoterNotVoted(to) returns (bool) {
+        if (!_isTokenAmountValid(amount)) {
+            revert TokenAmountIsNotValid(amount);
+        }
+
         return super.transfer(to, amount);
     }
 
     function transferWithSingleSwap(address to, uint256 amount, NodeChange calldata change) external returns (bool) {
+        if (!_isBalanceEnough(amount, msg.sender)) {
+            revert BalanceIsNotEnoughError(balanceOf(msg.sender), amount);
+        }
+
+        if (!_isTokenAmountValid(amount)) {
+            revert TokenAmountIsNotValid(amount);
+        }
+
         address sender = msg.sender;
         uint256 senderPrice = getPriceByVoter(sender);
         uint256 receiverPrice = getPriceByVoter(to);
@@ -267,6 +284,10 @@ contract Voting is MyERC20, VotingFee, LinkedList {
         NodeChange calldata change1,
         NodeChange calldata change2
     ) external checkIfVoterVoted(msg.sender) checkIfVoterVoted(to) returns (bool) {
+        if (!_isTokenAmountValid(amount)) {
+            revert TokenAmountIsNotValid(amount);
+        }
+
         uint256 senderPrice = getPriceByVoter(msg.sender);
         uint256 receiverPrice = getPriceByVoter(to);
 
@@ -323,6 +344,10 @@ contract Voting is MyERC20, VotingFee, LinkedList {
         address to,
         uint256 amount
     ) public override checkIfVoterNotVoted(owner) checkIfVoterNotVoted(to) returns (bool) {
+        if (!_isTokenAmountValid(amount)) {
+            revert TokenAmountIsNotValid(amount);
+        }
+
         return super.transferFrom(owner, to, amount);
     }
 
@@ -332,6 +357,10 @@ contract Voting is MyERC20, VotingFee, LinkedList {
         uint256 amount,
         NodeChange calldata change
     ) external returns (bool) {
+        if (!_isTokenAmountValid(amount)) {
+            revert TokenAmountIsNotValid(amount);
+        }
+
         uint256 ownerPrice = getPriceByVoter(owner);
         uint256 receiverPrice = getPriceByVoter(to);
         bool ownerVoted = ownerPrice != 0;
@@ -353,6 +382,10 @@ contract Voting is MyERC20, VotingFee, LinkedList {
         NodeChange calldata change1,
         NodeChange calldata change2
     ) external checkIfVoterVoted(owner) checkIfVoterVoted(to) returns (bool) {
+        if (!_isTokenAmountValid(amount)) {
+            revert TokenAmountIsNotValid(amount);
+        }
+
         uint256 senderPrice = getPriceByVoter(owner);
         uint256 receiverPrice = getPriceByVoter(to);
 
@@ -386,7 +419,7 @@ contract Voting is MyERC20, VotingFee, LinkedList {
             revert CallingMethodWithWrongTxError();
         }
 
-        if (!isPriceExists(change.prev)) {
+        if (change.prev != 0 && !isPriceExists(change.prev)) {
             revert NodeIndexIsNotValidError(change.prev);
         }
 
@@ -394,7 +427,7 @@ contract Voting is MyERC20, VotingFee, LinkedList {
 
         if (
             change.power < 0 ||
-            change.power + amount != pricePrevPower ||
+            (priceOwner == to ? change.power - amount != pricePrevPower : change.power + amount != pricePrevPower) ||
             !_isNodeInValidPosition(change.price, change.power, change.prev)
         ) {
             revert PowerIsNotValidError(change.power);
@@ -406,7 +439,7 @@ contract Voting is MyERC20, VotingFee, LinkedList {
         return true;
     }
 
-    function _buy(uint256 amount, uint256 prev) private {
+    function _buy(uint256 amount, uint256 prev) internal {
         uint256 requiredEtherAmount = tokenPrice * amount;
         uint256 fee = _getPercentage(requiredEtherAmount, _buyFeePercentage);
         uint256 totalEtherAmount = requiredEtherAmount + fee;
@@ -447,7 +480,7 @@ contract Voting is MyERC20, VotingFee, LinkedList {
         _totalFees += fee;
     }
 
-    function _sell(uint256 amount, uint256 prev) private {
+    function _sell(uint256 amount, uint256 prev) internal {
         address sender = msg.sender;
 
         if (balanceOf(sender) < amount) {
@@ -496,7 +529,7 @@ contract Voting is MyERC20, VotingFee, LinkedList {
         uint256 price2,
         address owner,
         address to
-    ) private {
+    ) internal {
         (nodeChange1, nodeChange2) = nodeChange1.price == price1
             ? (nodeChange1, nodeChange2)
             : (nodeChange2, nodeChange1);
@@ -568,9 +601,13 @@ contract Voting is MyERC20, VotingFee, LinkedList {
         NodeChange memory firstNode,
         NodeChange memory secondNode
     ) internal view returns (bool) {
+        uint256 prevNodePower = getPowerByPrice(firstNode.prev);
+
+        prevNodePower = prevNodePower == 0 ? firstNode.power + 1 : prevNodePower;
+
         return
             secondNode.power <= firstNode.power &&
-            firstNode.power <= getPowerByPrice(firstNode.prev) &&
+            firstNode.power <= prevNodePower &&
             secondNode.power >= getNextNode(firstNode.prev).power;
     }
 
@@ -585,5 +622,17 @@ contract Voting is MyERC20, VotingFee, LinkedList {
         }
 
         return true;
+    }
+
+    function _isTokenAmountValid(uint256 amount) internal pure returns (bool) {
+        if (amount == 0) {
+            return false;
+        }
+
+        return true;
+    }
+
+    function _isBalanceEnough(uint256 amount, address owner) internal view returns (bool) {
+        return balanceOf(owner) >= amount;
     }
 }

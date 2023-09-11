@@ -15,6 +15,14 @@ contract MyERC20 is IERC20 {
     mapping(address => mapping(address => uint256)) private _allowances;
     uint256 private _totalSupply;
 
+    modifier isAmountValid(uint256 amount, address from) {
+        if (_balances[from] < amount) {
+            revert BalanceIsNotEnoughError(_balances[from], amount);
+        }
+
+        _;
+    }
+
     modifier notToZeroAddress(address addr) {
         if (addr == address(0)) {
             revert TransferToZeroAddressError();
@@ -80,11 +88,7 @@ contract MyERC20 is IERC20 {
         address from,
         address to,
         uint256 amount
-    ) internal virtual notFromZeroAddress(from) notToZeroAddress(to) {
-        if (_balances[from] < amount) {
-            revert BalanceIsNotEnoughError(_balances[from], amount);
-        }
-
+    ) internal virtual notFromZeroAddress(from) notToZeroAddress(to) isAmountValid(amount, from) {
         _balances[from] -= amount;
         _balances[to] += amount;
 

@@ -1,16 +1,13 @@
-import { HardhatUserConfig } from "hardhat/config";
+import { HardhatUserConfig, task } from "hardhat/config";
 import "@nomicfoundation/hardhat-toolbox";
+
+task('deploy', 'Deploys the contract', async () => {
+
+});
 
 const config: HardhatUserConfig = {
   solidity: {
-    version: "0.8.19",
-    settings: {
-      optimizer: {
-        enabled: true,
-        runs: 100,
-      },
-      viaIR: true,
-    }
+    version: "0.8.19"
   },
 };
 

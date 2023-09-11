@@ -5,7 +5,11 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Percents} from "./Percents.sol";
 
 contract VotingFee is Ownable, Percents {
-    error FeeWithdrawPeriodError(uint256 currentTime, uint256 timeLeft);
+    error FeeWithdrawPeriodError(uint256 currentTime, uint256 lastFeeWithdrawTime, uint256 timeLeft);
+
+    event BuyFeePercentageChanged(uint256 newPercentage);
+    event SellFeePercentageChanged(uint256 newPercentage);
+    event FeeWithdrawPeriodChanged(uint256 newPeriod);
 
     uint256 internal _lastFeeWithdrawTime;
     uint256 internal _feeWithdrawPeriod = 1 weeks;
@@ -21,7 +25,6 @@ contract VotingFee is Ownable, Percents {
     ) Percents(decimals) notValidPercentage(buyFeePercentage) notValidPercentage(sellFeePercentage) {
         _buyFeePercentage = buyFeePercentage;
         _sellFeePercentage = sellFeePercentage;
-        _lastFeeWithdrawTime = block.timestamp;
     }
 
     function getTotalFees() external view returns (uint256) {
@@ -30,10 +33,12 @@ contract VotingFee is Ownable, Percents {
 
     function withdrawFees() external onlyOwner {
         uint256 currentTimestamp = block.timestamp;
-        uint256 timeLeft = currentTimestamp - _lastFeeWithdrawTime - _feeWithdrawPeriod;
+        uint256 timePassed = currentTimestamp - _lastFeeWithdrawTime;
 
-        if (timeLeft > 0) {
-            revert FeeWithdrawPeriodError({currentTime: currentTimestamp, timeLeft: timeLeft});
+        if (timePassed < _feeWithdrawPeriod) {
+            uint256 timeLeft = _feeWithdrawPeriod - timePassed;
+
+            revert FeeWithdrawPeriodError({currentTime: currentTimestamp, lastFeeWithdrawTime: _lastFeeWithdrawTime, timeLeft: timeLeft});
         }
 
         _lastFeeWithdrawTime = currentTimestamp;
@@ -44,13 +49,19 @@ contract VotingFee is Ownable, Percents {
 
     function setBuyFeePercentage(uint256 percentage) external onlyOwner {
         _buyFeePercentage = percentage;
+
+        emit BuyFeePercentageChanged(percentage);
     }
 
     function setSellFeePercentage(uint256 percentage) external onlyOwner {
         _sellFeePercentage = percentage;
+
+        emit SellFeePercentageChanged(percentage);
     }
 
-    function setFeeCollectionPeriod(uint256 period) external onlyOwner {
+    function setFeeWithdrawPeriod(uint256 period) external onlyOwner {
         _feeWithdrawPeriod = period;
+
+        emit FeeWithdrawPeriodChanged(period);
     }
 }
