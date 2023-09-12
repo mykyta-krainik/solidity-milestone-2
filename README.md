@@ -1,13 +1,7 @@
-# Sample Hardhat Project
+# Simple token
 
-This project demonstrates a basic Hardhat use case. It comes with a sample contract, a test for that contract, and a script that deploys that contract.
+This project implements the voting system for a new token price.
+It's based on a descending linked list so that we can efficiently get the information about a price: its price, position in it, etc.
+Some actions like determining a new node position are made off-chain due to the limitation of time complexity for on-chain. But there are respective checks in the latter to validate the data passed from the first one.
 
-Try running some of the following tasks:
-
-```shell
-npx hardhat help
-npx hardhat test
-REPORT_GAS=true npx hardhat test
-npx hardhat node
-npx hardhat run scripts/deploy.ts
-```
+Tech stack: Solidity (for smart contracts), Hardhat (as a development environment), Typescript + ethers.js (for testing)
