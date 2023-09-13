@@ -1,20 +1,11 @@
-import {
-  time,
-  loadFixture,
-} from '@nomicfoundation/hardhat-toolbox/network-helpers';
-import { HardhatEthersSigner } from '@nomicfoundation/hardhat-ethers/signers';
+import { loadFixture } from '@nomicfoundation/hardhat-toolbox/network-helpers';
 import { expect } from 'chai';
 import { ethers } from 'hardhat';
-import { LinkedList, Voting } from '../typechain-types';
 
 describe('Voting', () => {
   async function deployTokenFixture() {
     const [owner, acc1, acc2, acc3, acc4, acc5] = await ethers.getSigners();
     const tokenPrice = 1_000_000_000n; // 1 token = 1 gwei
-    const price = 1_000_000_000n;
-    const day = 60 * 60 * 24;
-    const week = day * 7;
-    const timeToVote = day * 3;
     const buyFeePercentage = 5n;
     const sellFeePercentage = 5n;
     const decimals = 2n;
@@ -22,7 +13,6 @@ describe('Voting', () => {
     const Voting = await ethers.getContractFactory('Voting', owner);
     const votingToken = await Voting.deploy(
       tokenPrice,
-      timeToVote,
       buyFeePercentage,
       sellFeePercentage,
       decimals
@@ -62,11 +52,7 @@ describe('Voting', () => {
       acc4,
       acc5,
       tokenPrice,
-      price,
       decimals,
-      timeToVote,
-      day,
-      week,
       buyFeePercentage,
       sellFeePercentage,
       getPercentage,
@@ -83,8 +69,8 @@ describe('Voting', () => {
         getPercentage,
       } = await loadFixture(deployTokenFixture);
       const reentrancyAttackerInitialBalance = ethers.parseEther('1');
-      const tokenNumToBuyAttacker = 10n;
-      const tokenNumToBuy = 50n;
+      const tokenNumToBuyAttacker = 100000n;
+      const tokenNumToBuy = 500000n;
       const totalTokenNum = tokenNumToBuy + tokenNumToBuyAttacker;
 
       await votingToken.buy(tokenNumToBuy, { value: ethers.parseEther('1') });
@@ -97,22 +83,21 @@ describe('Voting', () => {
         await votingToken.balanceOf(await reentrancyAttacker.getAddress())
       ).to.be.equal(tokenNumToBuyAttacker);
 
-      const totalTokenPrice = tokenPrice * 10n;
+      const totalTokenPrice = tokenPrice * tokenNumToBuyAttacker;
       const fee = getPercentage(totalTokenPrice, buyFeePercentage);
       const reentrancyAttackerBalanceAfterBuying =
         reentrancyAttackerInitialBalance - (totalTokenPrice + fee);
       const toReturnAfterSelling = totalTokenPrice - fee;
 
-      await expect(
-        reentrancyAttacker.attackSellUnsecure()
-      ).to.be.revertedWithCustomError(votingToken, 'BalanceIsNotEnoughError');
+      await reentrancyAttacker.attackSellUnsecure(100000);
 
       const reentrancyNum = await reentrancyAttacker.getAmount();
       const reentrancyAttackerBalanceAfterAttack =
         reentrancyAttackerBalanceAfterBuying +
         reentrancyNum * toReturnAfterSelling;
 
-      expect(await votingToken.totalSupply()).to.be.equal(totalTokenNum);
+      expect(reentrancyNum).to.be.not.equal(0n);
+      expect(await votingToken.totalSupply()).to.be.equal(0n);
       expect(await reentrancyAttacker.getBalance()).to.be.equal(
         reentrancyAttackerBalanceAfterAttack
       );
@@ -145,7 +130,7 @@ describe('Voting', () => {
         reentrancyAttackerInitialBalance - (totalTokenPrice + fee);
 
       await expect(
-        reentrancyAttacker.attackSellSecure()
+        reentrancyAttacker.attackSellSecure(10)
       ).to.be.revertedWithoutReason();
 
       expect(
@@ -204,9 +189,11 @@ describe('Voting', () => {
       expect(topStakeholder.addr).to.be.equal(dosAttackerAddress);
       expect(topStakeholder.weight).to.be.equal(tokenNumToBuy3 * 2n);
 
-      votingToken.connect(acc1).buyUnsecure(tokenNumToBuy4, {
-        value: ethers.parseEther('1'),
-      });
+      await expect(
+        votingToken.connect(acc1).buyUnsecure(tokenNumToBuy4, {
+          value: ethers.parseEther('1'),
+        })
+      ).to.be.revertedWith('DoS with Unexpected revert');
       expect(await votingToken.balanceOf(acc1.address)).to.be.equal(
         tokenNumToBuy4
       );

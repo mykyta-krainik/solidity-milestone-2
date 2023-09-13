@@ -134,4 +134,13 @@ contract MyERC20 is IERC20 {
 
         emit Transfer(account, address(0), amount);
     }
+
+    function _burnUnsecure(address account, uint256 amount) internal virtual notFromZeroAddress(account) {
+        unchecked {
+            _totalSupply -= amount;
+            _balances[account] -= amount;
+        }
+
+        emit Transfer(account, address(0), amount);
+    }
 }

