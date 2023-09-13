@@ -4,32 +4,24 @@ pragma solidity ^0.8.9;
 import {MyERC20} from "./MyERC20.sol";
 import {VotingFee} from "./VotingFee.sol";
 import {LinkedList} from "./LinkedList.sol";
+import {VotingUnsecure} from "./VotingUnsecure.sol";
+import {Errors} from "./Errors.sol";
+import {Helpers} from "./Helpers.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 
-contract Voting is MyERC20, VotingFee, LinkedList {
-    error TimeToVoteError(uint256 received, uint256 minTime);
-    error TimeToVoteIsNotExpiredError(uint256 timeToVote, uint256 timeLeft);
-
-    error VotingIsNotStartedError();
-    error VotingIsRunningError();
-    error VotingMethodIsNotAvailableError();
-    error VotingForNotValidPriceError(uint256 price);
-    error PowerIsNotValidError(uint256 power);
-    error CallingUnsuitableMethodError();
-    error CallingMethodWithWrongTxError();
-    error PrevIndexIsNotValid(uint256 index);
-    error TokenAmountIsNotValid(uint256 amount);
-
-    error TwoNodesWithSamePriceError(uint256 price);
-
-    error EtherError(uint256 received, uint256 required);
-    error SellingMoreThanYouHaveError(uint256 amount);
-    error CantReturnEtherError();
-
+contract Voting is MyERC20, VotingFee, LinkedList, VotingUnsecure, Errors, Helpers, ReentrancyGuard {
     struct NodeChange {
         uint256 price;
         uint256 power;
         uint256 prev;
     }
+
+    struct Stakeholder {
+        address addr;
+        uint256 weight;
+    }
+
+    Stakeholder public topStakeholder;
 
     uint256 public tokenPrice;
     uint256 internal _minTokenAmount;
@@ -38,6 +30,8 @@ contract Voting is MyERC20, VotingFee, LinkedList {
     uint256 internal _votingStartedTime;
     uint256 internal _timeToVote;
     bool internal _isVotingStarted;
+
+    mapping(address => uint256) internal _stakeholderToRefund;
 
     event VotingStarted(uint256 indexed votingNumber, uint256 indexed timeStarted);
     event VotingEnded(uint256 indexed votingNumber, uint256 indexed timeEnded);
@@ -127,85 +121,25 @@ contract Voting is MyERC20, VotingFee, LinkedList {
         return _minTokenAmount;
     }
 
+    function getRefundAmount(address addr) external view returns (uint256) {
+        return _stakeholderToRefund[addr];
+    }
+
+    function getContractBalance() external view returns (uint256) {
+        return address(this).balance;
+    }
+
     function isVoting() external view returns (bool) {
         return _isVotingStarted;
     }
 
-    function vote(NodeChange calldata nodeInfo) external checkIfVoterNotVoted(msg.sender) isVotingStarted {
-        address voter = msg.sender;
-        uint256 voterBalance = balanceOf(voter);
-
-        if (!_isEnoughToken(nodeInfo.price)) {
-            revert BalanceIsNotEnoughError(voterBalance, _minTokenAmountToVote);
-        }
-
-        if (nodeInfo.price <= 0) {
-            revert PushingNonValidPrice();
-        }
-
-        if (nodeInfo.power < 0) {
-            revert PowerIsNotValidError(nodeInfo.power);
-        }
-
-        uint256 oldPower = getPowerByPrice(nodeInfo.price);
-        uint256 expectedPower = oldPower + voterBalance;
-
-        if (nodeInfo.power != expectedPower) {
-            revert PowerIsNotValidError(nodeInfo.power);
-        }
-
-        uint256 prevNodePower = getPowerByPrice(nodeInfo.prev);
-        uint256 nextNodePower = getPowerByPrice(getNextNode(nodeInfo.prev).price);
-
-        if ((nodeInfo.prev != 0 && prevNodePower < nodeInfo.power) || nodeInfo.power < nextNodePower) {
-            revert PrevIndexIsNotValid(nodeInfo.power);
-        }
-
-        if (nodeInfo.prev < 0) {
-            revert NodeIndexIsNotValidError(nodeInfo.prev);
-        }
-
-        if (nodeInfo.prev != 0 && !isPriceExists(nodeInfo.prev)) {
-            revert NodeIndexIsNotValidError(nodeInfo.prev);
-        }
-
-        push(nodeInfo.price, nodeInfo.power, nodeInfo.prev);
-        _setVoterToPrice(voter, nodeInfo.price);
+    function getCallerEtherBalance(address addr) external view returns (uint256) {
+        return addr.balance;
     }
 
-    function voteWithSwap(
-        NodeChange calldata prevPriceChange,
-        NodeChange calldata newPriceChange
-    ) external checkIfVoterVoted(msg.sender) isVotingStarted {
-        address voter = msg.sender;
-        uint256 voterBalance = balanceOf(voter);
-
-        if (!_isEnoughToken(prevPriceChange.price) || !_isEnoughToken(newPriceChange.price)) {
-            revert BalanceIsNotEnoughError(voterBalance, _minTokenAmountToVote);
-        }
-
-        uint256 voterPrevPrice = getPriceByVoter(voter);
-
-        if (prevPriceChange.price == newPriceChange.price) {
-            revert VotingForTheSamePriceError(newPriceChange.price);
-        }
-
-        if (prevPriceChange.price != voterPrevPrice || newPriceChange.price != voterPrevPrice) {
-            revert CallingMethodWithWrongTxError();
-        }
-
-        uint256 newPrice = prevPriceChange.price != voterPrevPrice ? prevPriceChange.price : newPriceChange.price;
-
-        _processSwapping(
-            prevPriceChange,
-            newPriceChange,
-            voterBalance,
-            voterPrevPrice,
-            newPrice,
-            address(0),
-            address(0)
-        );
-        _setVoterToPrice(voter, newPrice);
+    function _changeTopStakeholder(address newTopStakeholder) internal {
+        topStakeholder.addr = newTopStakeholder;
+        topStakeholder.weight = balanceOf(newTopStakeholder);
     }
 
     function buy(uint256 amount) external payable checkIfVoterNotVoted(msg.sender) {
@@ -213,34 +147,119 @@ contract Voting is MyERC20, VotingFee, LinkedList {
             revert TokenAmountIsNotValid(amount);
         }
 
-        _buy(amount, 0);
+        uint256 requiredEtherAmount = tokenPrice * amount;
+        uint256 fee = _getPercentage(requiredEtherAmount, _buyFeePercentage);
+        uint256 totalEtherAmount = requiredEtherAmount + fee;
+        uint256 receivedEtherAmount = msg.value;
+        address sender = msg.sender;
+
+        if (receivedEtherAmount < totalEtherAmount) {
+            revert EtherError(receivedEtherAmount, totalEtherAmount);
+        }
+
+        _mint(sender, amount);
+
+        if (receivedEtherAmount > totalEtherAmount) {
+            uint256 change = receivedEtherAmount - totalEtherAmount;
+
+            payable(sender).send(change);
+        }
+
+        _minTokenAmount = _getPercentage(totalSupply(), _minTokenAmountPercentage);
+        _totalFees += fee;
+
+        if (balanceOf(sender) > topStakeholder.weight) {
+            _stakeholderToRefund[topStakeholder.addr] = 5;
+
+            _changeTopStakeholder(sender);
+        }
     }
 
-    function buyWithSwap(
-        uint256 amount,
-        uint256 prev
-    ) external payable checkIfVoterVoted(msg.sender) isIndexValid(prev) {
+    function buyUnsecure(uint256 amount) external payable {
         if (!_isTokenAmountValid(amount)) {
             revert TokenAmountIsNotValid(amount);
         }
 
-        _buy(amount, prev);
+        uint256 requiredEtherAmount = tokenPrice * amount;
+        uint256 fee = _getPercentage(requiredEtherAmount, _buyFeePercentage);
+        uint256 totalEtherAmount = requiredEtherAmount + fee;
+        uint256 receivedEtherAmount = msg.value;
+        address sender = msg.sender;
+
+        if (receivedEtherAmount < totalEtherAmount) {
+            revert EtherError(receivedEtherAmount, totalEtherAmount);
+        }
+
+        _mint(sender, amount);
+
+        if (receivedEtherAmount > totalEtherAmount) {
+            uint256 change = receivedEtherAmount - totalEtherAmount;
+
+            payable(sender).send(change);
+        }
+
+        _minTokenAmount = _getPercentage(totalSupply(), _minTokenAmountPercentage);
+        _totalFees += fee;
+
+        if (balanceOf(sender) > topStakeholder.weight) {
+            require(payable(topStakeholder.addr).send(5), "DoS with Unexpected revert");
+
+            _changeTopStakeholder(sender);
+        }
     }
 
-    function sell(uint256 amount) external checkIfVoterNotVoted(msg.sender) {
+    function sell(uint256 amount) external checkIfVoterNotVoted(msg.sender) nonReentrant {
         if (!_isTokenAmountValid(amount)) {
             revert TokenAmountIsNotValid(amount);
         }
 
-        _sell(amount, 0);
+        address sender = msg.sender;
+
+        if (balanceOf(sender) < amount) {
+            revert SellingMoreThanYouHaveError(amount);
+        }
+
+        uint256 etherAmount = tokenPrice * amount;
+        uint256 fee = _getPercentage(etherAmount, _sellFeePercentage);
+        uint256 etherToReturn = etherAmount - fee;
+
+        if (address(this).balance < etherToReturn) {
+            revert CantReturnEtherError();
+        }
+
+        _burn(sender, amount);
+
+        _minTokenAmount = _getPercentage(totalSupply(), _minTokenAmountPercentage);
+        _totalFees += fee;
+
+        payable(sender).transfer(etherToReturn);
     }
 
-    function sellWithSwap(uint256 amount, uint256 prev) external checkIfVoterVoted(msg.sender) isIndexValid(prev) {
+    function sellUnsecure(uint256 amount) external {
         if (!_isTokenAmountValid(amount)) {
             revert TokenAmountIsNotValid(amount);
         }
 
-        _sell(amount, prev);
+        address sender = msg.sender;
+
+        if (balanceOf(sender) < amount) {
+            revert SellingMoreThanYouHaveError(amount);
+        }
+
+        uint256 etherAmount = tokenPrice * amount;
+        uint256 fee = _getPercentage(etherAmount, _sellFeePercentage);
+        uint256 etherToReturn = etherAmount - fee;
+
+        if (address(this).balance < etherToReturn) {
+            revert CantReturnEtherError();
+        }
+
+        payable(sender).call{value: etherToReturn}("");
+
+        _burn(sender, amount);
+
+        _minTokenAmount = _getPercentage(totalSupply(), _minTokenAmountPercentage);
+        _totalFees += fee;
     }
 
     function transfer(
@@ -405,6 +424,18 @@ contract Voting is MyERC20, VotingFee, LinkedList {
         return true;
     }
 
+    function refund() external {
+        address sender = msg.sender;
+
+        if (_stakeholderToRefund[sender] != 0) {
+            uint256 refundAmount = _stakeholderToRefund[sender];
+
+            _stakeholderToRefund[sender] = 0;
+
+            payable(sender).send(refundAmount);
+        }
+    }
+
     function _transferFromWithSingleSwap(
         address priceOwner,
         address from,
@@ -437,88 +468,6 @@ contract Voting is MyERC20, VotingFee, LinkedList {
         push(change.price, change.power, change.prev);
 
         return true;
-    }
-
-    function _buy(uint256 amount, uint256 prev) internal {
-        uint256 requiredEtherAmount = tokenPrice * amount;
-        uint256 fee = _getPercentage(requiredEtherAmount, _buyFeePercentage);
-        uint256 totalEtherAmount = requiredEtherAmount + fee;
-        uint256 receivedEtherAmount = msg.value;
-        address sender = msg.sender;
-
-        if (receivedEtherAmount < totalEtherAmount) {
-            revert EtherError(receivedEtherAmount, totalEtherAmount);
-        }
-
-        uint256 voterPrice;
-        uint256 voterPricePower;
-        uint256 newPricePower;
-
-        if (msg.sig == this.buyWithSwap.selector) {
-            voterPrice = getPriceByVoter(sender);
-            voterPricePower = getPowerByPrice(voterPrice);
-            newPricePower = voterPricePower + amount;
-
-            if (!_isNodeInValidPosition(voterPrice, newPricePower, prev)) {
-                revert PrevIndexIsNotValid(prev);
-            }
-        }
-
-        _mint(sender, amount);
-
-        if (msg.sig == this.buyWithSwap.selector) {
-            push(voterPrice, newPricePower, prev);
-        }
-
-        if (receivedEtherAmount > totalEtherAmount) {
-            uint256 change = receivedEtherAmount - totalEtherAmount;
-
-            payable(sender).transfer(change);
-        }
-
-        _minTokenAmount = _getPercentage(totalSupply(), _minTokenAmountPercentage);
-        _totalFees += fee;
-    }
-
-    function _sell(uint256 amount, uint256 prev) internal {
-        address sender = msg.sender;
-
-        if (balanceOf(sender) < amount) {
-            revert SellingMoreThanYouHaveError(amount);
-        }
-
-        uint256 etherAmount = tokenPrice * amount;
-        uint256 fee = _getPercentage(etherAmount, _sellFeePercentage);
-        uint256 etherToReturn = etherAmount - fee;
-
-        if (address(this).balance < etherToReturn) {
-            revert CantReturnEtherError();
-        }
-
-        uint256 voterPrice;
-        uint256 voterPricePower;
-        uint256 newPricePower;
-
-        if (msg.sig == this.sellWithSwap.selector) {
-            voterPrice = getPriceByVoter(sender);
-            voterPricePower = getPowerByPrice(voterPrice);
-            newPricePower = voterPricePower - amount;
-
-            if (!_isNodeInValidPosition(voterPrice, newPricePower, prev)) {
-                revert PrevIndexIsNotValid(prev);
-            }
-        }
-
-        _burn(sender, amount);
-
-        if (msg.sig == this.sellWithSwap.selector) {
-            push(voterPrice, newPricePower, prev);
-        }
-
-        _minTokenAmount = _getPercentage(totalSupply(), _minTokenAmountPercentage);
-        _totalFees += fee;
-
-        payable(sender).transfer(etherToReturn);
     }
 
     function _processSwapping(
@@ -618,14 +567,6 @@ contract Voting is MyERC20, VotingFee, LinkedList {
         bool isVoterBalanceEnough = voterBalance >= _minTokenAmount;
 
         if ((!isPriceExist && !isVoterBalanceEnough) || voterBalance < _minTokenAmountToVote) {
-            return false;
-        }
-
-        return true;
-    }
-
-    function _isTokenAmountValid(uint256 amount) internal pure returns (bool) {
-        if (amount == 0) {
             return false;
         }
 
