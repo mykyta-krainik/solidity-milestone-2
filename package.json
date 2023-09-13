@@ -1,7 +1,7 @@
 {
-  "name": "milestone-1",
+  "name": "milestone-2",
   "version": "1.0.0",
-  "description": "Implementation of the IERC20 interface with the ability to vote",
+  "description": "Rewrite the first milestone with reentrancy and DoS vulnerabilities",
   "main": "index.js",
   "scripts": {
     "compile": "npx hardhat compile",
